@@ -167,13 +167,76 @@ def run_discovery(config: AppConfig, storage: Storage, *, state_dir: Path) -> Di
 
         for index, row in enumerate(expanded_rows):
             normalized = normalize_observation(row)
+            mac_value = str(normalized.get("mac") or "").strip() or None
+            ip_value = str(normalized.get("ip") or "").strip() or None
+            asset_id: int | None = None
+
+            if mac_value:
+                if mac_value in assets_by_uid:
+                    asset_uid = mac_value
+                elif ip_value and ip_value in ip_to_uid:
+                    prior_uid = ip_to_uid[ip_value]
+                    prior_asset = assets_by_uid.pop(prior_uid)
+                    prior_asset["asset_uid"] = mac_value
+                    assets_by_uid[mac_value] = prior_asset
+                    asset_uid = mac_value
+                else:
+                    asset_uid = mac_value
+            elif ip_value:
+                asset_uid = ip_to_uid.get(ip_value, ip_value)
+            else:
+                asset_uid = None
+
+            if asset_uid:
+                asset = assets_by_uid.setdefault(
+                    asset_uid,
+                    {
+                        "asset_uid": asset_uid,
+                        "mac_address": normalized.get("mac"),
+                        "ip_address": normalized.get("ip"),
+                        "hostname": normalized.get("hostname"),
+                        "status": "active",
+                        "sources": [],
+                        "source_observations": {},
+                    },
+                )
+                if normalized.get("mac"):
+                    asset["mac_address"] = normalized.get("mac")
+                if normalized.get("ip"):
+                    asset["ip_address"] = normalized.get("ip")
+                    ip_to_uid[str(normalized.get("ip"))] = asset_uid
+                if normalized.get("hostname"):
+                    asset["hostname"] = normalized.get("hostname")
+                sources = asset.setdefault("sources", [])
+                if collector_name not in sources:
+                    sources.append(collector_name)
+                source_observations = asset.setdefault("source_observations", {})
+                source_observations[collector_name] = normalized
+
+                now_iso = _now_iso()
+                asset_payload = {
+                    "asset_uid": asset_uid,
+                    "mac_address": asset.get("mac_address"),
+                    "ip_address": asset.get("ip_address"),
+                    "hostname": asset.get("hostname"),
+                    "first_seen_at": now_iso,
+                    "last_seen_at": now_iso,
+                    "source_collector": collector_name,
+                    "raw_artifact_path": str(raw_path),
+                    "raw_artifact_hash": raw_hash,
+                    "confidence": 1.0,
+                    "status": "active",
+                    "is_active": 1,
+                }
+                asset_id = storage.upsert_asset(asset_payload)
+
             key = str(normalized.get("mac") or normalized.get("ip") or f"{collector_name}:{index}")
             payload_json = json.dumps(normalized, sort_keys=True)
             storage.upsert_observation(
                 {
                     "run_id": run_id,
                     "collection_job_id": job_id,
-                    "asset_id": None,
+                    "asset_id": asset_id,
                     "identity_id": None,
                     "service_id": None,
                     "observed_at": _now_iso(),
