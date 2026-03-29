@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from ipaddress import ip_network
 from pathlib import Path
@@ -36,6 +36,24 @@ class CollectorRecord:
     command: tuple[str, ...]
     return_code: int
     artifacts: tuple[ArtifactMetadata, ...]
+
+
+def parse_arp_scan_output(raw_text: str) -> list[dict[str, str]]:
+    """Parse arp-scan text output into observation records."""
+    results: list[dict[str, str]] = []
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("Interface:", "Starting", "Ending", "packets")):
+            continue
+        parts = stripped.split("\t") if "\t" in stripped else stripped.split(maxsplit=2)
+        if len(parts) < 2:
+            continue
+        ip, mac = parts[0], parts[1]
+        vendor = parts[2] if len(parts) > 2 else ""
+        if "." not in ip or ":" not in mac:
+            continue
+        results.append({"ip": ip, "mac": mac, "vendor": vendor.strip()})
+    return results
 
 
 def _normalize_networks(raw_cidrs: list[str], *, label: str) -> list[str]:
@@ -90,13 +108,13 @@ def collect_arp_scan(config: dict[str, Any], *, run_id: str, run_root: Path) -> 
     extra_args = [str(value) for value in config.get("extra_args", [])]
     command = [binary, "--interface", interface, *extra_args, *scanned_cidrs]
 
-    started_at = datetime.now(UTC)
+    started_at = datetime.now(timezone.utc)
     completed = subprocess.run(
         command,
         capture_output=True,
         check=False,
     )
-    finished_at = datetime.now(UTC)
+    finished_at = datetime.now(timezone.utc)
 
     collector_dir = run_root / "artifacts" / run_id / "arp_scan"
     artifacts = [
