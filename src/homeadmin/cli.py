@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from homeadmin.baseline import create_baseline_snapshot
-from homeadmin.config import load_config
+from homeadmin.config import load_config, validate_discovery_scope
 from homeadmin.drift import calculate_drift
 from homeadmin.logging import configure_logging
 from homeadmin.reconcile import load_discovery_assets, reconcile_assets
@@ -25,6 +25,12 @@ def _state_paths(state_dir: Path) -> tuple[Path, Path, Path]:
 
 def _cmd_discover(args: argparse.Namespace) -> int:
     config = load_config()
+    try:
+        validate_discovery_scope(config)
+    except ValueError as exc:
+        print(f"discover: invalid scope configuration: {exc}")
+        return 2
+
     state_dir = args.state_dir or config.state_dir
     _, discovery_latest, _ = _state_paths(state_dir)
     discovery_latest.parent.mkdir(parents=True, exist_ok=True)
