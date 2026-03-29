@@ -180,6 +180,12 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"
     )
+    pipeline_parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Optional JSON list of discovered assets",
+    )
     pipeline_parser.add_argument("--run-uuid", default=None, help="Optional explicit run UUID")
     pipeline_parser.set_defaults(handler=_cmd_pipeline)
 
