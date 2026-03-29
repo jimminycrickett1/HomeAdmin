@@ -111,3 +111,8 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
 
     storage.connection.commit()
     return ReconcileResult(run_id=run_id, run_uuid=resolved_run_uuid, asset_count=len(assets))
+"""Reconciliation exports."""
+
+from homeadmin.reconcile.identity import reconcile_observations
+
+__all__ = ["reconcile_observations"]
