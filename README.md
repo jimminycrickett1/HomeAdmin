@@ -27,19 +27,6 @@ Expected result: both commands print CLI usage and exit successfully.
 
 HomeAdmin currently persists runtime state in a local SQLite database under `--state-dir` (default: `.homeadmin`).
 
-Before running `discover`, you must set explicit scope controls:
-
-```bash
-export HOMEADMIN_ALLOWED_CIDRS='192.168.1.0/24'
-export HOMEADMIN_ARP_SCAN_INTERFACE='eth0'
-export HOMEADMIN_NMAP_INTERFACE='eth0'
-# Optional tuning controls:
-export HOMEADMIN_ARP_SCAN_MAX_SECONDS='120'
-export HOMEADMIN_NMAP_MAX_RATE='100'
-```
-
-If scope values are missing or invalid, `homeadmin discover` exits non-zero.
-
 External binaries expected in the runtime environment:
 
 - `arp-scan` (required for collector execution)
