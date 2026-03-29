@@ -125,7 +125,7 @@ def _cmd_drift(args: argparse.Namespace) -> int:
 
 
 def _cmd_pipeline(args: argparse.Namespace) -> int:
-    discover_args = argparse.Namespace(state_dir=args.state_dir, input=args.input)
+    discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
     baseline_args = argparse.Namespace(state_dir=args.state_dir)
     drift_args = argparse.Namespace(state_dir=args.state_dir, write_report=False)
@@ -151,12 +151,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     discover_parser = subparsers.add_parser("discover", help="Discover assets")
-    discover_parser.add_argument(
-        "--input",
-        type=Path,
-        default=None,
-        help="Optional JSON list of discovered assets",
-    )
     discover_parser.set_defaults(handler=_cmd_discover)
 
     reconcile_parser = subparsers.add_parser("reconcile", help="Reconcile data")
