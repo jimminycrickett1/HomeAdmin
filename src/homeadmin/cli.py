@@ -4,45 +4,152 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+import json
+from pathlib import Path
 
+from homeadmin.baseline import create_baseline_snapshot
 from homeadmin.config import load_config
+from homeadmin.drift import calculate_drift
 from homeadmin.logging import configure_logging
+from homeadmin.reconcile import load_discovery_assets, reconcile_assets
+from homeadmin.reporting import write_reports
+from homeadmin.storage.db import Storage
 
 
-def _cmd_discover(_: argparse.Namespace) -> int:
-    print("discover: not yet implemented")
+def _state_paths(state_dir: Path) -> tuple[Path, Path, Path]:
+    db_path = state_dir / "homeadmin.db"
+    discovery_latest = state_dir / "discovery" / "latest.json"
+    reports_dir = state_dir / "reports"
+    return db_path, discovery_latest, reports_dir
+
+
+def _cmd_discover(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    _, discovery_latest, _ = _state_paths(state_dir)
+    discovery_latest.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.input is not None:
+        payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    else:
+        payload = []
+
+    discovery_latest.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(f"discover: wrote {discovery_latest}")
     return 0
 
 
-def _cmd_reconcile(_: argparse.Namespace) -> int:
-    print("reconcile: not yet implemented")
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, discovery_latest, _ = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+
+    if not discovery_latest.exists():
+        print(f"reconcile: discovery snapshot missing at {discovery_latest}")
+        return 2
+
+    assets = load_discovery_assets(discovery_latest)
+    result = reconcile_assets(storage, assets, run_uuid=args.run_uuid)
+    print(f"reconcile: run_id={result.run_id} run_uuid={result.run_uuid} assets={result.asset_count}")
     return 0
 
 
-def _cmd_report(_: argparse.Namespace) -> int:
-    print("report: not yet implemented")
+def _cmd_report(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, reports_dir = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+
+    result = calculate_drift(storage)
+    artifacts = write_reports(result, reports_dir)
+    print(f"report: json={artifacts.json_path} markdown={artifacts.markdown_path}")
     return 0
 
 
-def _cmd_baseline_create(_: argparse.Namespace) -> int:
-    print("baseline create: not yet implemented")
+def _cmd_baseline_create(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+
+    result = create_baseline_snapshot(storage)
+    print(
+        f"baseline create: version={result.baseline_version} baselines={result.baseline_count}"
+    )
     return 0
 
 
-def _cmd_drift(_: argparse.Namespace) -> int:
-    print("drift: not yet implemented")
+def _cmd_drift(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, reports_dir = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+
+    result = calculate_drift(storage)
+    if args.write_report:
+        artifacts = write_reports(result, reports_dir)
+        print(f"drift: report json={artifacts.json_path} markdown={artifacts.markdown_path}")
+
+    summary = {
+        "generated_at": result.generated_at,
+        "reference_type": result.reference_type,
+        "latest_run_id": result.latest_run_id,
+        "counts": {
+            "current": len(result.current),
+            "new": len(result.new),
+            "missing": len(result.missing),
+            "unresolved_unknowns": len(result.unresolved_unknowns),
+            "source_contradictions": len(result.source_contradictions),
+        },
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_pipeline(args: argparse.Namespace) -> int:
+    discover_args = argparse.Namespace(state_dir=args.state_dir, input=args.input)
+    reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
+    report_args = argparse.Namespace(state_dir=args.state_dir)
+    drift_args = argparse.Namespace(state_dir=args.state_dir, write_report=True)
+
+    for handler, local_args in (
+        (_cmd_discover, discover_args),
+        (_cmd_reconcile, reconcile_args),
+        (_cmd_report, report_args),
+        (_cmd_drift, drift_args),
+    ):
+        status = handler(local_args)
+        if status != 0:
+            return status
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level HomeAdmin parser."""
     parser = argparse.ArgumentParser(prog="homeadmin")
+    parser.add_argument("--state-dir", type=Path, default=None, help="Override state directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     discover_parser = subparsers.add_parser("discover", help="Discover assets")
+    discover_parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Optional JSON list of discovered assets",
+    )
     discover_parser.set_defaults(handler=_cmd_discover)
 
     reconcile_parser = subparsers.add_parser("reconcile", help="Reconcile data")
+    reconcile_parser.add_argument("--run-uuid", default=None, help="Optional explicit run UUID")
     reconcile_parser.set_defaults(handler=_cmd_reconcile)
 
     report_parser = subparsers.add_parser("report", help="Generate reports")
@@ -56,7 +163,24 @@ def build_parser() -> argparse.ArgumentParser:
     baseline_create_parser.set_defaults(handler=_cmd_baseline_create)
 
     drift_parser = subparsers.add_parser("drift", help="Detect drift")
+    drift_parser.add_argument(
+        "--write-report",
+        action="store_true",
+        help="Also write JSON/Markdown drift report artifacts",
+    )
     drift_parser.set_defaults(handler=_cmd_drift)
+
+    pipeline_parser = subparsers.add_parser(
+        "pipeline", help="Run discover -> reconcile -> report -> drift"
+    )
+    pipeline_parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Optional JSON list of discovered assets",
+    )
+    pipeline_parser.add_argument("--run-uuid", default=None, help="Optional explicit run UUID")
+    pipeline_parser.set_defaults(handler=_cmd_pipeline)
 
     return parser
 
