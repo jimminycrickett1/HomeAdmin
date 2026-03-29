@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 from ipaddress import ip_network
 from pathlib import Path
@@ -36,6 +36,34 @@ class CollectorRecord:
     command: tuple[str, ...]
     return_code: int
     artifacts: tuple[ArtifactMetadata, ...]
+
+
+def parse_nmap_gnmap_output(raw_text: str) -> list[dict[str, object]]:
+    """Parse nmap grepable output lines into host/service observations."""
+    records: list[dict[str, object]] = []
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Host:") or "Ports:" not in stripped:
+            continue
+        host_section, ports_section = stripped.split("Ports:", maxsplit=1)
+        ip = host_section.split()[1]
+        services = []
+        for port_field in ports_section.split(","):
+            parts = [item.strip() for item in port_field.split("/")]
+            if len(parts) < 5:
+                continue
+            port, state, protocol, _, service_name = parts[:5]
+            if state != "open":
+                continue
+            services.append(
+                {
+                    "port": int(port),
+                    "protocol": protocol,
+                    "service_name": service_name,
+                }
+            )
+        records.append({"ip": ip, "services": services})
+    return records
 
 
 def _normalize_networks(raw_cidrs: list[str], *, label: str) -> list[str]:
@@ -90,13 +118,13 @@ def collect_nmap(config: dict[str, Any], *, run_id: str, run_root: Path) -> Coll
     extra_args = [str(value) for value in config.get("extra_args", [])]
     command = [binary, "-e", interface, *extra_args, *scanned_cidrs]
 
-    started_at = datetime.now(UTC)
+    started_at = datetime.now(timezone.utc)
     completed = subprocess.run(
         command,
         capture_output=True,
         check=False,
     )
-    finished_at = datetime.now(UTC)
+    finished_at = datetime.now(timezone.utc)
 
     collector_dir = run_root / "artifacts" / run_id / "nmap"
     artifacts = [
