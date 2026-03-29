@@ -26,6 +26,17 @@ def _artifact(path: Path, content: bytes) -> ArpArtifact:
     )
 
 
+def _base_config(tmp_path: Path) -> AppConfig:
+    return AppConfig(
+        state_dir=tmp_path,
+        allowed_cidrs=("192.168.1.0/24",),
+        arp_scan_interface="eth0",
+        nmap_interface="eth0",
+        arp_scan_max_seconds=120,
+        nmap_max_rate=100,
+    )
+
+
 def test_run_discovery_persists_jobs_observations_and_assets(tmp_path: Path, monkeypatch) -> None:
     now = datetime.now(timezone.utc)
 

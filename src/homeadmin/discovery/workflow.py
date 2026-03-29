@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from homeadmin.collectors import collect_arp_scan, collect_nmap
@@ -29,6 +29,8 @@ class DiscoverResult:
     observation_count: int
     asset_count: int
     discovery_path: Path
+    is_partial: bool
+    failed_collectors: tuple[str, ...]
 
 
 def _now_iso() -> str:
@@ -69,41 +71,91 @@ def _persist_collection_job(storage: Storage, *, run_id: int, record: ArpScanRec
     return job_id, stdout_artifact.path, stdout_artifact.sha256_hex
 
 
+def _persist_failed_collection_job(storage: Storage, *, run_id: int, collector_name: str, run_uuid: str) -> None:
+    now_iso = _now_iso()
+    storage.upsert_collection_job(
+        {
+            "run_id": run_id,
+            "job_key": f"{collector_name}:{run_uuid}",
+            "source_collector": collector_name,
+            "started_at": now_iso,
+            "finished_at": now_iso,
+            "raw_artifact_path": None,
+            "raw_artifact_hash": None,
+            "confidence": 0.0,
+            "status": "failed",
+            "is_retry": 0,
+        }
+    )
+
+
 def run_discovery(config: AppConfig, storage: Storage, *, state_dir: Path) -> DiscoverResult:
     """Run enabled collectors and persist provenance-aware discovery outputs."""
 
     run_uuid = str(uuid4())
+    started_at = _now_iso()
     run_id = storage.upsert_run(
         {
             "run_uuid": run_uuid,
             "source_collector": "discover",
-            "started_at": _now_iso(),
-            "finished_at": _now_iso(),
+            "started_at": started_at,
+            "finished_at": started_at,
             "raw_artifact_path": str(state_dir / "artifacts" / run_uuid),
             "raw_artifact_hash": None,
             "confidence": 1.0,
-            "status": "completed",
+            "status": "running",
             "is_partial": 0,
         }
     )
 
-    collectors: list[tuple[str, ArpScanRecord | NmapRecord, list[dict[str, Any]], int, Path, str]] = []
+    collectors: list[tuple[str, list[dict[str, Any]], int, Path, str]] = []
+    failed_collectors: list[str] = []
 
-    arp_record = collect_arp_scan(_collector_config(config, "arp_scan"), run_id=run_uuid, run_root=state_dir)
-    arp_job_id, arp_stdout_path, arp_stdout_hash = _persist_collection_job(storage, run_id=run_id, record=arp_record)
-    arp_rows = [dict(item) for item in parse_arp_scan_output(arp_stdout_path.read_text(encoding="utf-8", errors="replace"))]
-    collectors.append(("arp_scan", arp_record, arp_rows, arp_job_id, arp_stdout_path, arp_stdout_hash))
+    collector_specs: list[
+        tuple[
+            str,
+            Callable[[dict[str, Any]], ArpScanRecord | NmapRecord],
+            Callable[[str], list[dict[str, Any]]],
+        ]
+    ] = [
+        (
+            "arp_scan",
+            lambda payload: collect_arp_scan(payload, run_id=run_uuid, run_root=state_dir),
+            lambda stdout: [dict(item) for item in parse_arp_scan_output(stdout)],
+        ),
+        (
+            "nmap",
+            lambda payload: collect_nmap(payload, run_id=run_uuid, run_root=state_dir),
+            lambda stdout: [dict(item) for item in parse_nmap_gnmap_output(stdout)],
+        ),
+    ]
 
-    nmap_record = collect_nmap(_collector_config(config, "nmap"), run_id=run_uuid, run_root=state_dir)
-    nmap_job_id, nmap_stdout_path, nmap_stdout_hash = _persist_collection_job(storage, run_id=run_id, record=nmap_record)
-    nmap_rows = [dict(item) for item in parse_nmap_gnmap_output(nmap_stdout_path.read_text(encoding="utf-8", errors="replace"))]
-    collectors.append(("nmap", nmap_record, nmap_rows, nmap_job_id, nmap_stdout_path, nmap_stdout_hash))
+    for collector_name, collector_fn, parser_fn in collector_specs:
+        try:
+            record = collector_fn(_collector_config(config, collector_name))
+        except Exception:
+            failed_collectors.append(collector_name)
+            _persist_failed_collection_job(
+                storage,
+                run_id=run_id,
+                collector_name=collector_name,
+                run_uuid=run_uuid,
+            )
+            continue
+
+        job_id, stdout_path, stdout_hash = _persist_collection_job(storage, run_id=run_id, record=record)
+        if record.return_code != 0:
+            failed_collectors.append(collector_name)
+            continue
+
+        rows = parser_fn(stdout_path.read_text(encoding="utf-8", errors="replace"))
+        collectors.append((collector_name, rows, job_id, stdout_path, stdout_hash))
 
     assets_by_uid: dict[str, dict[str, Any]] = {}
     ip_to_uid: dict[str, str] = {}
     observation_count = 0
 
-    for collector_name, _, rows, job_id, raw_path, raw_hash in collectors:
+    for collector_name, rows, job_id, raw_path, raw_hash in collectors:
         expanded_rows: list[dict[str, Any]] = []
         for row in rows:
             services = row.get("services")
@@ -187,12 +239,30 @@ def run_discovery(config: AppConfig, storage: Storage, *, state_dir: Path) -> Di
     discovery_path.parent.mkdir(parents=True, exist_ok=True)
     discovery_path.write_text(json.dumps(assets, indent=2, sort_keys=True), encoding="utf-8")
 
+    is_partial = bool(failed_collectors)
+    finished_at = _now_iso()
+    storage.upsert_run(
+        {
+            "run_uuid": run_uuid,
+            "source_collector": "discover",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "raw_artifact_path": str(state_dir / "artifacts" / run_uuid),
+            "raw_artifact_hash": None,
+            "confidence": 1.0,
+            "status": "partial" if is_partial else "completed",
+            "is_partial": 1 if is_partial else 0,
+        }
+    )
+
     storage.connection.commit()
     return DiscoverResult(
         run_id=run_id,
         run_uuid=run_uuid,
-        collection_jobs=len(collectors),
+        collection_jobs=2,
         observation_count=observation_count,
         asset_count=len(assets),
         discovery_path=discovery_path,
+        is_partial=is_partial,
+        failed_collectors=tuple(sorted(failed_collectors)),
     )

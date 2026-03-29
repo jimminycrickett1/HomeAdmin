@@ -43,9 +43,11 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         "discover: "
         f"run_id={result.run_id} run_uuid={result.run_uuid} "
         f"jobs={result.collection_jobs} observations={result.observation_count} "
-        f"assets={result.asset_count} wrote={result.discovery_path}"
+        f"assets={result.asset_count} partial={result.is_partial} "
+        f"failed_collectors={','.join(result.failed_collectors) or 'none'} "
+        f"wrote={result.discovery_path}"
     )
-    return 0
+    return 2 if result.is_partial else 0
 
 
 def _cmd_reconcile(args: argparse.Namespace) -> int:

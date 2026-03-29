@@ -39,6 +39,7 @@ export HOMEADMIN_NMAP_MAX_RATE='100'
 ```
 
 If scope values are missing or invalid, `homeadmin discover` exits non-zero.
+If a collector fails, discovery persists a partial run and exits non-zero so operators can investigate safely.
 
 External binaries expected in the runtime environment:
 
