@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from homeadmin.storage import Storage
+
+
+def test_storage_uses_sqlite_backend(tmp_path) -> None:
+    storage = Storage(tmp_path / "state.db")
+    conn = storage.connection
+
+    assert isinstance(conn, sqlite3.Connection)
 
 
 def test_storage_initialize_creates_schema(tmp_path) -> None:

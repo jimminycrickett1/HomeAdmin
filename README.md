@@ -4,6 +4,12 @@ HomeAdmin is a conservative home-network inventory CLI for collecting discovery 
 
 ## Quickstart
 
+## Storage strategy (M3)
+
+- **Runtime backend for M3:** SQLite (`.homeadmin/homeadmin.db`) via `homeadmin.storage.db.Storage`.
+- **PostgreSQL status:** deferred to a later milestone (target: M4+) behind the storage interface.
+- SQLite remains the default for local development, CI, and current CLI workflows.
+
 ### 1) Install
 
 ```bash

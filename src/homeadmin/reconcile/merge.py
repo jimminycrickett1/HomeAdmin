@@ -43,10 +43,17 @@ def merge_observations(
             if source_name == "nmap":
                 service = observation.get("service")
                 if isinstance(service, dict):
-                    record["services"].append(service)
-            record["sources"].append(source_name)
+                    services = record.get("services")
+                    if isinstance(services, list):
+                        services.append(service)
+            sources = record.get("sources")
+            if isinstance(sources, list):
+                sources.append(source_name)
 
     for record in merged.values():
-        record["sources"] = sorted(set(record["sources"]))
+        sources = record.get("sources")
+        if isinstance(sources, list):
+            unique_sources = sorted({str(source) for source in sources})
+            record["sources"] = unique_sources
 
     return list(merged.values())
