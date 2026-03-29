@@ -125,16 +125,18 @@ def _cmd_drift(args: argparse.Namespace) -> int:
 
 
 def _cmd_pipeline(args: argparse.Namespace) -> int:
-    discover_args = argparse.Namespace(state_dir=args.state_dir, input=args.input)
+    discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
+    baseline_args = argparse.Namespace(state_dir=args.state_dir)
+    drift_args = argparse.Namespace(state_dir=args.state_dir, write_report=False)
     report_args = argparse.Namespace(state_dir=args.state_dir)
-    drift_args = argparse.Namespace(state_dir=args.state_dir, write_report=True)
 
     for handler, local_args in (
         (_cmd_discover, discover_args),
         (_cmd_reconcile, reconcile_args),
-        (_cmd_report, report_args),
+        (_cmd_baseline_create, baseline_args),
         (_cmd_drift, drift_args),
+        (_cmd_report, report_args),
     ):
         status = handler(local_args)
         if status != 0:
@@ -149,12 +151,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     discover_parser = subparsers.add_parser("discover", help="Discover assets")
-    discover_parser.add_argument(
-        "--input",
-        type=Path,
-        default=None,
-        help="Optional JSON list of discovered assets",
-    )
     discover_parser.set_defaults(handler=_cmd_discover)
 
     reconcile_parser = subparsers.add_parser("reconcile", help="Reconcile data")
@@ -180,13 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     drift_parser.set_defaults(handler=_cmd_drift)
 
     pipeline_parser = subparsers.add_parser(
-        "pipeline", help="Run discover -> reconcile -> report -> drift"
-    )
-    pipeline_parser.add_argument(
-        "--input",
-        type=Path,
-        default=None,
-        help="Optional JSON list of discovered assets",
+        "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"
     )
     pipeline_parser.add_argument("--run-uuid", default=None, help="Optional explicit run UUID")
     pipeline_parser.set_defaults(handler=_cmd_pipeline)
