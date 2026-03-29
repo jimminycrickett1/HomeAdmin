@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "homeadmin"
+version = "0.1.0"
+description = "Home administration tooling CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "HomeAdmin" }]
+dependencies = []
+
+[project.scripts]
+homeadmin = "homeadmin.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/homeadmin"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/homeadmin/py.typed" = "homeadmin/py.typed"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
