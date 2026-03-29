@@ -9,6 +9,7 @@ from pathlib import Path
 
 from homeadmin.baseline import create_baseline_snapshot
 from homeadmin.config import load_config, validate_discovery_scope
+from homeadmin.discovery import run_discovery
 from homeadmin.drift import calculate_drift
 from homeadmin.logging import configure_logging
 from homeadmin.reconcile import load_discovery_assets, reconcile_assets
@@ -32,16 +33,18 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         return 2
 
     state_dir = args.state_dir or config.state_dir
-    _, discovery_latest, _ = _state_paths(state_dir)
-    discovery_latest.parent.mkdir(parents=True, exist_ok=True)
+    db_path, _, _ = _state_paths(state_dir)
 
-    if args.input is not None:
-        payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    else:
-        payload = []
+    storage = Storage(db_path)
+    storage.initialize()
 
-    discovery_latest.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    print(f"discover: wrote {discovery_latest}")
+    result = run_discovery(config, storage, state_dir=state_dir)
+    print(
+        "discover: "
+        f"run_id={result.run_id} run_uuid={result.run_uuid} "
+        f"jobs={result.collection_jobs} observations={result.observation_count} "
+        f"assets={result.asset_count} wrote={result.discovery_path}"
+    )
     return 0
 
 

@@ -27,6 +27,19 @@ Expected result: both commands print CLI usage and exit successfully.
 
 HomeAdmin currently persists runtime state in a local SQLite database under `--state-dir` (default: `.homeadmin`).
 
+Before running `discover`, you must set explicit scope controls:
+
+```bash
+export HOMEADMIN_ALLOWED_CIDRS='192.168.1.0/24'
+export HOMEADMIN_ARP_SCAN_INTERFACE='eth0'
+export HOMEADMIN_NMAP_INTERFACE='eth0'
+# Optional tuning controls:
+export HOMEADMIN_ARP_SCAN_MAX_SECONDS='120'
+export HOMEADMIN_NMAP_MAX_RATE='100'
+```
+
+If scope values are missing or invalid, `homeadmin discover` exits non-zero.
+
 External binaries expected in the runtime environment:
 
 - `arp-scan` (required for collector execution)
@@ -52,6 +65,6 @@ homeadmin report
 ```
 
 Notes:
-- `discover` currently accepts optional JSON input (`--input`) and writes `.homeadmin/discovery/latest.json`.
+- `discover` now runs configured collectors (`arp-scan`, `nmap`) and writes `.homeadmin/discovery/latest.json` from normalized observations.
 - `reconcile`, `baseline create`, `drift`, and `report` persist/read from `.homeadmin/homeadmin.db` and `.homeadmin/reports`.
 - You can override the runtime directory with `--state-dir` for deterministic test runs.
