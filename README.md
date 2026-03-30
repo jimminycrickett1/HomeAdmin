@@ -76,4 +76,8 @@ Notes:
 - `reconcile`, `baseline create`, `drift`, and `report` persist/read from `.homeadmin/homeadmin.db` and `.homeadmin/reports`.
 - `plan generate` compiles recommendations into immutable, versioned execution plans (`plans`, `plan_steps`, `plan_approvals`).
 - `plan show --id <id>` prints a persisted plan, and `plan diff --id <id>` compares it to the prior version.
+- Plan lifecycle is stateful and audited: `draft -> proposed -> approved/rejected -> executed`.
+- Approval is explicit owner action via `homeadmin plan approve --id <id> --approver <identity>` or `homeadmin plan reject --id <id> --approver <identity>`.
+- For non-interactive runs, `plan approve`/`plan reject` accept `--approval-token` signed with `HOMEADMIN_APPROVAL_TOKEN_SECRET`.
+- `homeadmin plan execute --id <id>` refuses execution unless the plan is currently approved and plan-hash verification passes.
 - You can override the runtime directory with `--state-dir` for deterministic test runs.
