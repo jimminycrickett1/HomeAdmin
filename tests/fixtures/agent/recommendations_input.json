@@ -1,0 +1,33 @@
+{
+  "generated_at": "2026-03-30T00:00:00+00:00",
+  "source_run_id": 101,
+  "recommendations": [
+    {
+      "rule_id": "assets_missing_expected_services",
+      "title": "Investigate missing expected services",
+      "priority": "high",
+      "asset_uid": "asset-a",
+      "provenance": {
+        "evidence_ids": ["ev-100", "ev-101"]
+      }
+    },
+    {
+      "rule_id": "stale_unknown_assets",
+      "title": "Triage stale unknown",
+      "priority": "medium",
+      "asset_uid": "asset-z",
+      "provenance": {
+        "evidence_ids": ["ev-200"]
+      }
+    },
+    {
+      "rule_id": "exposed_services_without_baseline_expectations",
+      "title": "Review unexpected exposure",
+      "priority": "low",
+      "asset_uid": "asset-b",
+      "provenance": {
+        "evidence_ids": ["ev-300"]
+      }
+    }
+  ]
+}

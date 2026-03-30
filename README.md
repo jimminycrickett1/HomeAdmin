@@ -81,3 +81,29 @@ Notes:
 - For non-interactive runs, `plan approve`/`plan reject` accept `--approval-token` signed with `HOMEADMIN_APPROVAL_TOKEN_SECRET`.
 - `homeadmin plan execute --id <id>` refuses execution unless the plan is currently approved and plan-hash verification passes.
 - You can override the runtime directory with `--state-dir` for deterministic test runs.
+
+## AI orchestration safety model
+
+HomeAdmin includes an AI orchestration layer in `src/homeadmin/agent/` for producing recommendation-plan proposals.
+
+### What it does
+
+- Summarizes recommendation state (counts, priorities, assets).
+- Proposes deterministic plan variants (`minimal-risk`, `balanced`, `coverage-first`).
+- Emits explicit tradeoff justification per variant.
+- Maps each recommendation to known execution method identifiers.
+
+### Hard safety constraints
+
+- **Read-only by default**: orchestration emits proposals only.
+- **No direct command execution privileges**: orchestration does not run shell commands.
+- **Structured output required**: output includes an `approval_workflow_payload` compatible with plan-generation workflow.
+- **Mandatory human approval before apply**: apply-mode execution still requires explicit approval in plan state transitions.
+
+### Audit and evaluation fixtures
+
+Evaluation fixtures are provided under `tests/fixtures/agent/` to validate that orchestration output is:
+
+- policy-compliant,
+- deterministic enough for audit replay,
+- traceable back to source evidence IDs.
