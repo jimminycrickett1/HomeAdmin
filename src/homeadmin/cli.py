@@ -10,10 +10,10 @@ from pathlib import Path
 from homeadmin.baseline import create_baseline_snapshot
 from homeadmin.config import load_config, validate_discovery_scope
 from homeadmin.discovery import run_discovery
-from homeadmin.drift import calculate_drift
+from homeadmin.drift import calculate_drift, drift_to_dict
 from homeadmin.logging import configure_logging
 from homeadmin.reconcile import load_discovery_assets, reconcile_assets
-from homeadmin.reporting import write_reports
+from homeadmin.reporting import generate_recommendations, write_recommendation_reports, write_reports
 from homeadmin.storage.db import Storage
 
 
@@ -126,6 +126,25 @@ def _cmd_drift(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def _cmd_recommend(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, reports_dir = _state_paths(state_dir)
+
+    drift_payload: dict[str, object]
+    if args.drift_json is not None:
+        drift_payload = json.loads(args.drift_json.read_text(encoding="utf-8"))
+    else:
+        storage = Storage(db_path)
+        storage.initialize()
+        drift_payload = drift_to_dict(calculate_drift(storage))
+
+    recommendations = generate_recommendations(drift_payload)
+    artifacts = write_recommendation_reports(recommendations, reports_dir)
+    print(f"recommend: json={artifacts.json_path} markdown={artifacts.markdown_path}")
+    return 0
+
 def _cmd_pipeline(args: argparse.Namespace) -> int:
     discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
@@ -176,6 +195,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also write JSON/Markdown drift report artifacts",
     )
     drift_parser.set_defaults(handler=_cmd_drift)
+
+    recommend_parser = subparsers.add_parser("recommend", help="Generate recommendation opportunities from drift output")
+    recommend_parser.add_argument(
+        "--drift-json",
+        type=Path,
+        default=None,
+        help="Optional path to an existing drift_report.json payload to consume",
+    )
+    recommend_parser.set_defaults(handler=_cmd_recommend)
 
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"

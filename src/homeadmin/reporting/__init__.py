@@ -8,6 +8,11 @@ import json
 from typing import Any
 
 from homeadmin.drift import DriftResult, drift_to_dict
+from homeadmin.reporting.recommendations import (
+    RecommendationArtifacts,
+    generate_recommendations,
+    write_recommendation_reports,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,3 +133,12 @@ def _render_age_bucket_list(buckets: dict[str, int]) -> str:
         return "_None_"
     ordered = ["0-1d", "2-7d", "8-30d", "31d+"]
     return "\n".join(f"- `{bucket}`: `{int(buckets.get(bucket, 0))}`" for bucket in ordered)
+
+
+__all__ = [
+    "ReportArtifacts",
+    "RecommendationArtifacts",
+    "write_reports",
+    "generate_recommendations",
+    "write_recommendation_reports",
+]

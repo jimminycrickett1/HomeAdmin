@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-03-29T10:00:00+00:00",
+  "latest_run_id": 42,
+  "reference_type": "previous_run",
+  "current": [],
+  "new": [
+    {
+      "asset_uid": "asset-new-1",
+      "ip_address": "192.168.1.20",
+      "hostname": "new-host.local",
+      "status": "active",
+      "services": [
+        {"service_name": "ssh", "port": 22, "protocol": "tcp"},
+        {"service_name": "http", "port": 80, "protocol": "tcp"}
+      ],
+      "provenance": {
+        "source_observation_keys": ["arp_scan", "nmap"],
+        "raw_artifacts": [
+          {
+            "raw_artifact_path": "/state/raw/nmap.xml",
+            "raw_artifact_hash": "sha256:nmap1"
+          }
+        ]
+      }
+    }
+  ],
+  "missing": [
+    {
+      "asset_uid": "asset-missing-1",
+      "ip_address": "192.168.1.30",
+      "hostname": "db.local",
+      "status": "active",
+      "services": [
+        {"service_name": "postgres", "port": 5432, "protocol": "tcp"}
+      ],
+      "discrepancy_id": 3101,
+      "provenance": {
+        "source_observation_keys": ["nmap"]
+      }
+    }
+  ],
+  "source_contradictions": [
+    {
+      "asset_uid": "asset-ctr-1",
+      "ip_address": "192.168.1.40",
+      "hostname": "printer.local",
+      "status": "active",
+      "contradictions": ["conflicting_ip_addresses"],
+      "contradiction_recurrence_count": 3,
+      "discrepancy_ids": [2201, 2202],
+      "source_observations": {
+        "arp_scan": {"ip_address": "192.168.1.40"},
+        "nmap": {"ip_address": "192.168.1.41"}
+      }
+    }
+  ],
+  "unresolved_unknowns": [
+    {
+      "asset_uid": "asset-unk-1",
+      "ip_address": "192.168.1.60",
+      "status": "unknown",
+      "classification": "chronic_unknown",
+      "priority": "high",
+      "age_days": 9,
+      "recurrence_count": 4,
+      "unknown_fingerprint": "unknown:asset-unk-1",
+      "discrepancy_id": 4101,
+      "source_observations": {
+        "arp_scan": {"ip_address": "192.168.1.60"}
+      }
+    }
+  ]
+}
