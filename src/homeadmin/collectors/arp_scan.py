@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-from ipaddress import ip_network
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 import json
 import subprocess
@@ -79,9 +79,17 @@ def _validate_scope(config: dict[str, Any]) -> tuple[str, list[str], list[str]]:
     allowed_networks = [ip_network(item, strict=False) for item in allowed_cidrs]
     for requested in requested_cidrs:
         requested_network = ip_network(requested, strict=False)
-        if not any(
-            requested_network.subnet_of(allowed_network) for allowed_network in allowed_networks
-        ):
+        in_scope = False
+        for allowed_network in allowed_networks:
+            if isinstance(requested_network, IPv4Network) and isinstance(allowed_network, IPv4Network):
+                if requested_network.subnet_of(allowed_network):
+                    in_scope = True
+                    break
+            if isinstance(requested_network, IPv6Network) and isinstance(allowed_network, IPv6Network):
+                if requested_network.subnet_of(allowed_network):
+                    in_scope = True
+                    break
+        if not in_scope:
             raise ValueError(
                 f"requested CIDR {requested} is not within config.allowed_cidrs"
             )
