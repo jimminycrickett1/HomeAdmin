@@ -22,6 +22,16 @@ class ReconcileResult:
     asset_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class IdentityEvidence:
+    """Single confidence input used to score a reconciled identity."""
+
+    evidence_type: str
+    weight: float
+    contribution: float
+    detail: str
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -97,6 +107,161 @@ def _identity_from_asset(asset: dict[str, Any]) -> tuple[str, str, str]:
     return ("unknown", "unknown", "unknown")
 
 
+def _source_observations(asset: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    payload = asset.get("source_observations")
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            result[str(key)] = value
+    return result
+
+
+def _build_provenance(asset: dict[str, Any]) -> dict[str, Any]:
+    source_observations = _source_observations(asset)
+    raw_artifacts: list[dict[str, str]] = []
+    seen_artifacts: set[tuple[str, str]] = set()
+
+    for source_name, observation in source_observations.items():
+        artifact_path = str(observation.get("raw_artifact_path") or observation.get("artifact_path") or "").strip()
+        artifact_hash = str(observation.get("raw_artifact_hash") or observation.get("artifact_hash") or "").strip()
+        if not artifact_path and not artifact_hash:
+            continue
+        key = (artifact_path, artifact_hash)
+        if key in seen_artifacts:
+            continue
+        seen_artifacts.add(key)
+        raw_artifacts.append(
+            {
+                "collector": source_name,
+                "raw_artifact_path": artifact_path,
+                "raw_artifact_hash": artifact_hash,
+            }
+        )
+
+    return {
+        "source_observation_keys": sorted(source_observations.keys()),
+        "raw_artifacts": raw_artifacts,
+    }
+
+
+def _score_identity(asset: dict[str, Any], identity_type: str) -> tuple[float, list[IdentityEvidence]]:
+    source_observations = _source_observations(asset)
+    observations = list(source_observations.values())
+
+    macs = [
+        mac
+        for observation in observations
+        for mac in [_normalize_mac(observation.get("mac_address") or observation.get("mac"))]
+        if mac
+    ]
+    unique_macs = sorted(set(macs))
+
+    hostnames = [
+        str(observation.get("hostname") or "").strip().lower()
+        for observation in observations
+        if str(observation.get("hostname") or "").strip()
+    ]
+    unique_hostnames = sorted(set(hostnames))
+
+    ips = [
+        str(observation.get("ip_address") or observation.get("ip") or "").strip()
+        for observation in observations
+        if str(observation.get("ip_address") or observation.get("ip") or "").strip()
+    ]
+    unique_ips = sorted(set(ips))
+
+    service_signature_counts: dict[str, int] = {}
+    for observation in observations:
+        services = observation.get("services")
+        if not isinstance(services, list):
+            continue
+        for service in services:
+            if not isinstance(service, dict):
+                continue
+            signature = (
+                f"{service.get('port', '')}/"
+                f"{service.get('protocol', 'tcp')}/"
+                f"{service.get('service_name') or service.get('service') or ''}"
+            )
+            service_signature_counts[signature] = service_signature_counts.get(signature, 0) + 1
+
+    evidence: list[IdentityEvidence] = []
+
+    mac_match_contribution = 1.0 if len(unique_macs) == 1 and len(macs) >= 1 else 0.0
+    if len(unique_macs) > 1:
+        mac_match_contribution = 0.0
+    evidence.append(
+        IdentityEvidence(
+            evidence_type="mac_match",
+            weight=0.55,
+            contribution=mac_match_contribution,
+            detail=(
+                f"unique_macs={len(unique_macs)} observed_macs={unique_macs or 'none'}"
+            ),
+        )
+    )
+
+    stable_hostname_contribution = 1.0 if len(unique_hostnames) == 1 and len(hostnames) >= 2 else 0.0
+    evidence.append(
+        IdentityEvidence(
+            evidence_type="stable_hostname",
+            weight=0.20,
+            contribution=stable_hostname_contribution,
+            detail=(
+                f"unique_hostnames={len(unique_hostnames)} observed_hostnames={unique_hostnames or 'none'}"
+            ),
+        )
+    )
+
+    repeated_ip_contribution = 1.0 if len(unique_ips) == 1 and len(ips) >= 2 else 0.0
+    evidence.append(
+        IdentityEvidence(
+            evidence_type="repeated_ip_history",
+            weight=0.10,
+            contribution=repeated_ip_contribution,
+            detail=f"unique_ips={len(unique_ips)} observed_ip_count={len(ips)}",
+        )
+    )
+
+    has_continuous_service = any(count >= 2 for count in service_signature_counts.values())
+    evidence.append(
+        IdentityEvidence(
+            evidence_type="service_continuity",
+            weight=0.10,
+            contribution=1.0 if has_continuous_service else 0.0,
+            detail=(
+                "repeated_service_signatures="
+                f"{sorted([key for key, count in service_signature_counts.items() if count >= 2]) or 'none'}"
+            ),
+        )
+    )
+
+    contradiction_penalty = 0.0
+    if len(unique_macs) > 1:
+        contradiction_penalty -= 0.30
+    if len(unique_hostnames) > 1:
+        contradiction_penalty -= 0.10
+    if identity_type == "ip" and len(unique_ips) == 1:
+        contradiction_penalty -= 0.20
+
+    evidence.append(
+        IdentityEvidence(
+            evidence_type="contradiction_penalty",
+            weight=1.0,
+            contribution=contradiction_penalty,
+            detail=(
+                f"penalty={contradiction_penalty:.2f} mac_conflicts={len(unique_macs) > 1} "
+                f"hostname_conflicts={len(unique_hostnames) > 1}"
+            ),
+        )
+    )
+
+    score = sum(item.weight * item.contribution for item in evidence)
+    return (max(0.0, min(1.0, score)), evidence)
+
+
 def _contradiction_details(asset: dict[str, Any]) -> str | None:
     source_observations = asset.get("source_observations")
     if not isinstance(source_observations, dict):
@@ -159,6 +324,16 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
         inferred_status = str(asset.get("status", "active"))
         if not asset.get("mac_address") and not asset.get("hostname"):
             inferred_status = "unknown"
+        confidence, evidence_trail = _score_identity(asset, identity_type)
+        provenance = _build_provenance(asset)
+        provenance_json = json.dumps(provenance, sort_keys=True)
+        provenance_hash = sha256(provenance_json.encode("utf-8")).hexdigest()
+        artifact_paths = [
+            str(raw_artifact.get("raw_artifact_path"))
+            for raw_artifact in provenance.get("raw_artifacts", [])
+            if str(raw_artifact.get("raw_artifact_path") or "").strip()
+        ]
+        combined_artifact_path = ",".join(sorted(set(artifact_paths))) or None
 
         asset_payload = {
             "asset_uid": asset["asset_uid"],
@@ -184,13 +359,29 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
                 "first_seen_at": now,
                 "last_seen_at": now,
                 "source_collector": "reconcile",
-                "raw_artifact_path": None,
-                "raw_artifact_hash": None,
-                "confidence": float(asset.get("confidence", 1.0)),
+                "raw_artifact_path": combined_artifact_path,
+                "raw_artifact_hash": provenance_hash,
+                "confidence": confidence,
                 "status": str(asset.get("status", "active")),
                 "is_verified": 0,
             }
         )
+        for evidence in evidence_trail:
+            storage.upsert_identity_evidence(
+                {
+                    "identity_id": identity_id,
+                    "run_id": run_id,
+                    "evidence_type": evidence.evidence_type,
+                    "weight": evidence.weight,
+                    "contribution": evidence.contribution,
+                    "score": evidence.weight * evidence.contribution,
+                    "detail": evidence.detail,
+                    "provenance": provenance_json,
+                    "source_collector": "reconcile",
+                    "raw_artifact_path": combined_artifact_path,
+                    "raw_artifact_hash": provenance_hash,
+                }
+            )
         snapshot = {
             "asset_uid": asset["asset_uid"],
             "mac_address": asset.get("mac_address"),
@@ -199,7 +390,8 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
             "status": inferred_status,
             "sources": asset.get("sources", []),
             "source_observations": asset.get("source_observations", {}),
-            "unknown_fingerprint": _unknown_fingerprint(asset),
+            "provenance": provenance,
+            "identity_confidence": confidence,
         }
         snapshot_json = json.dumps(snapshot, sort_keys=True)
         observation_payload = {
@@ -213,9 +405,9 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
             "observation_key": identity_uid,
             "observation_value": snapshot_json,
             "source_collector": "reconcile",
-            "raw_artifact_path": None,
+            "raw_artifact_path": combined_artifact_path,
             "raw_artifact_hash": sha256(snapshot_json.encode("utf-8")).hexdigest(),
-            "confidence": float(asset.get("confidence", 1.0)),
+            "confidence": confidence,
             "status": "observed",
             "is_deleted": 0,
         }
@@ -234,9 +426,9 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
                     "detected_at": now,
                     "resolved_at": None,
                     "source_collector": "reconcile",
-                    "raw_artifact_path": None,
-                    "raw_artifact_hash": None,
-                    "confidence": float(asset.get("confidence", 1.0)),
+                    "raw_artifact_path": combined_artifact_path,
+                    "raw_artifact_hash": provenance_hash,
+                    "confidence": confidence,
                     "status": "open",
                     "is_acknowledged": 0,
                 }
