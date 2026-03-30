@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+from typing import cast
 
 from homeadmin.baseline import create_baseline_snapshot
 from homeadmin.config import load_config, validate_discovery_scope
@@ -154,7 +155,8 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
 
 def _recommendation_payload_from_args(*, args: argparse.Namespace, db_path: Path) -> dict[str, object]:
     if getattr(args, "recommendations_json", None) is not None:
-        return json.loads(args.recommendations_json.read_text(encoding="utf-8"))
+        payload = json.loads(args.recommendations_json.read_text(encoding="utf-8"))
+        return cast(dict[str, object], payload)
 
     storage = Storage(db_path)
     storage.initialize()

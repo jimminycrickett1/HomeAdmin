@@ -8,6 +8,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 
 class Storage:
@@ -414,7 +415,7 @@ class Storage:
 
     def latest_plan_version(self, plan_key: str) -> sqlite3.Row | None:
         """Fetch the latest plan row for a plan key."""
-        return self.connection.execute(
+        row = self.connection.execute(
             """
             SELECT * FROM plans
             WHERE plan_key = ?
@@ -423,6 +424,7 @@ class Storage:
             """,
             (plan_key,),
         ).fetchone()
+        return cast(sqlite3.Row | None, row)
 
     def get_plan(self, plan_id: int) -> dict[str, object] | None:
         """Fetch a plan with structured steps and approvals."""
@@ -654,7 +656,7 @@ class Storage:
 
     def get_execution_run(self, *, plan_id: int, plan_hash: str, dry_run: bool) -> sqlite3.Row | None:
         """Fetch one execution run by idempotency key."""
-        return self.connection.execute(
+        row = self.connection.execute(
             """
             SELECT * FROM execution_runs
             WHERE plan_id = ? AND plan_hash = ? AND dry_run = ?
@@ -663,6 +665,7 @@ class Storage:
             """,
             (plan_id, plan_hash, 1 if dry_run else 0),
         ).fetchone()
+        return cast(sqlite3.Row | None, row)
 
     def count_execution_steps(self, execution_run_id: int) -> int:
         """Count persisted execution steps for a run id."""
