@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 
 from homeadmin import cli
+from homeadmin.storage import Storage
 
 
 def test_cmd_plan_generate_from_recommendations_json(monkeypatch, tmp_path) -> None:
@@ -40,3 +44,92 @@ def test_cli_plan_parser_commands_exist() -> None:
 
     assert args.command == "plan"
     assert args.id == 7
+
+
+def test_plan_execution_requires_approval(monkeypatch, tmp_path) -> None:
+    recommendations = {
+        "generated_at": "2026-03-30T00:00:00+00:00",
+        "source_run_id": 9,
+        "recommendations": [
+            {
+                "rule_id": "stale_unknown_assets",
+                "title": "Triage stale unknown asset",
+                "priority": "medium",
+                "asset_uid": "asset-7",
+                "provenance": {},
+            }
+        ],
+    }
+    payload_path = tmp_path / "recommendations.json"
+    payload_path.write_text(json.dumps(recommendations), encoding="utf-8")
+    monkeypatch.setattr(cli, "load_config", lambda: type("Cfg", (), {"state_dir": tmp_path})())
+
+    assert cli._cmd_plan_generate(argparse.Namespace(state_dir=tmp_path, recommendations_json=payload_path)) == 0
+
+    storage = Storage(tmp_path / "homeadmin.db")
+    storage.initialize()
+    row = storage.connection.execute("SELECT id FROM plans ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    plan_id = int(row["id"])
+
+    blocked = cli._cmd_plan_execute(argparse.Namespace(state_dir=tmp_path, id=plan_id, executed_by="ops", note=None))
+    assert blocked == 2
+
+    approved = cli._cmd_plan_approve(
+        argparse.Namespace(
+            state_dir=tmp_path,
+            id=plan_id,
+            approver="owner",
+            reason="looks good",
+            approval_token=None,
+        )
+    )
+    assert approved == 0
+
+    executed = cli._cmd_plan_execute(argparse.Namespace(state_dir=tmp_path, id=plan_id, executed_by="ops", note=None))
+    assert executed == 0
+
+
+def test_plan_approve_with_signed_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda: type("Cfg", (), {"state_dir": tmp_path})())
+    monkeypatch.setenv("HOMEADMIN_APPROVAL_TOKEN_SECRET", "secret-1")
+
+    recommendations = {
+        "generated_at": "2026-03-30T00:00:00+00:00",
+        "source_run_id": 9,
+        "recommendations": [
+            {
+                "rule_id": "stale_unknown_assets",
+                "title": "Triage stale unknown asset",
+                "priority": "medium",
+                "asset_uid": "asset-9",
+                "provenance": {},
+            }
+        ],
+    }
+    payload_path = tmp_path / "recommendations.json"
+    payload_path.write_text(json.dumps(recommendations), encoding="utf-8")
+    assert cli._cmd_plan_generate(argparse.Namespace(state_dir=tmp_path, recommendations_json=payload_path)) == 0
+
+    storage = Storage(tmp_path / "homeadmin.db")
+    storage.initialize()
+    row = storage.connection.execute("SELECT id, plan_hash FROM plans ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    plan_id = int(row["id"])
+    plan_hash = str(row["plan_hash"])
+
+    payload = {"actor": "bot-owner", "plan_id": plan_id, "plan_hash": plan_hash}
+    payload_raw = base64.urlsafe_b64encode(json.dumps(payload, sort_keys=True).encode("utf-8")).decode("utf-8")
+    signature = hmac.new(b"secret-1", payload_raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{payload_raw}.{signature}"
+
+    status = cli._cmd_plan_approve(
+        argparse.Namespace(
+            state_dir=tmp_path,
+            id=plan_id,
+            approver=None,
+            reason="ci approval",
+            approval_token=token,
+        )
+    )
+    assert status == 0

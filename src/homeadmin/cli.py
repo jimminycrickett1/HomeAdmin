@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from collections.abc import Sequence
+from datetime import datetime, timezone
+import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
 
 from homeadmin.baseline import create_baseline_snapshot
@@ -236,6 +241,174 @@ def _cmd_plan_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _plan_hash_from_record(plan: dict[str, object]) -> str:
+    hashable = {
+        "plan_key": plan["plan_key"],
+        "title": plan["title"],
+        "recommendation_rule_id": plan["recommendation_rule_id"],
+        "asset_uid": plan["asset_uid"],
+        "priority": plan["priority"],
+        "prerequisites": plan["prerequisites"],
+        "ordered_steps": plan["ordered_steps"],
+        "expected_outcomes": plan["expected_outcomes"],
+        "rollback_steps": plan["rollback_steps"],
+        "verification_checks": plan["verification_checks"],
+        "blast_radius_estimate": plan["blast_radius_estimate"],
+        "required_privilege_level": plan["required_privilege_level"],
+        "provenance": plan.get("provenance", {}),
+    }
+    return plan_content_hash(hashable)
+
+
+def _verify_approval_token(
+    *,
+    token: str,
+    expected_plan_hash: str,
+    expected_plan_id: int,
+) -> tuple[str, str] | None:
+    secret = os.getenv("HOMEADMIN_APPROVAL_TOKEN_SECRET", "")
+    if not secret:
+        return None
+    parts = token.split(".")
+    if len(parts) != 2:
+        return None
+    payload_raw, signature = parts
+    computed = hmac.new(secret.encode("utf-8"), payload_raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed, signature):
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(payload_raw + "===")
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if int(payload.get("plan_id", -1)) != expected_plan_id:
+        return None
+    if str(payload.get("plan_hash", "")) != expected_plan_hash:
+        return None
+    actor = str(payload.get("actor", "")).strip()
+    if not actor:
+        return None
+    fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return actor, fingerprint
+
+
+def _cmd_plan_decision(args: argparse.Namespace, *, decision: str) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+    storage = Storage(db_path)
+    storage.initialize()
+    plan = storage.get_plan(args.id)
+    if plan is None:
+        print(f"plan {decision}: not found id={args.id}")
+        return 2
+
+    stored_hash = str(plan["plan_hash"])
+    recomputed_hash = _plan_hash_from_record(plan)
+    policy_passed: list[str] = []
+    policy_failed: list[str] = []
+    if recomputed_hash == stored_hash:
+        policy_passed.append("plan_hash_verified")
+    else:
+        policy_failed.append("plan_hash_mismatch")
+
+    approver = str(args.approver or os.getenv("HOMEADMIN_OPERATOR", "")).strip()
+    token_fingerprint: str | None = None
+    if args.approval_token:
+        token_result = _verify_approval_token(
+            token=args.approval_token,
+            expected_plan_hash=stored_hash,
+            expected_plan_id=args.id,
+        )
+        if token_result is None:
+            policy_failed.append("approval_token_invalid")
+        else:
+            approver, token_fingerprint = token_result
+            policy_passed.append("approval_token_valid")
+    elif approver:
+        policy_passed.append("interactive_approver_supplied")
+    else:
+        policy_failed.append("missing_approver_identity")
+
+    if policy_failed:
+        print(f"plan {decision}: policy checks failed id={args.id} checks={','.join(policy_failed)}")
+        return 2
+
+    with storage.transaction():
+        storage.insert_plan_approval(
+            {
+                "plan_id": args.id,
+                "approver": approver,
+                "decision": decision,
+                "rationale": args.reason,
+                "decided_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
+        storage.append_plan_state_event(
+            plan_id=args.id,
+            event_type=decision,
+            actor=approver,
+            plan_hash=stored_hash,
+            policy_checks={"passed": policy_passed, "failed": policy_failed},
+            approval_token_fingerprint=token_fingerprint,
+            metadata={"rationale": args.reason or ""},
+        )
+    print(f"plan {decision}: id={args.id} approver={approver} state={decision}")
+    return 0
+
+
+def _cmd_plan_approve(args: argparse.Namespace) -> int:
+    return _cmd_plan_decision(args, decision="approved")
+
+
+def _cmd_plan_reject(args: argparse.Namespace) -> int:
+    return _cmd_plan_decision(args, decision="rejected")
+
+
+def _cmd_plan_execute(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+    storage = Storage(db_path)
+    storage.initialize()
+    plan = storage.get_plan(args.id)
+    if plan is None:
+        print(f"plan execute: not found id={args.id}")
+        return 2
+
+    actor = str(args.executed_by or os.getenv("HOMEADMIN_OPERATOR", "")).strip() or "unknown"
+    recomputed_hash = _plan_hash_from_record(plan)
+    stored_hash = str(plan["plan_hash"])
+    policy_passed = []
+    policy_failed = []
+    if recomputed_hash == stored_hash:
+        policy_passed.append("plan_hash_verified")
+    else:
+        policy_failed.append("plan_hash_mismatch")
+
+    try:
+        storage.assert_plan_approved_for_execution(args.id, stored_hash)
+        policy_passed.append("approved_state_verified")
+    except ValueError as exc:
+        policy_failed.append(str(exc))
+
+    if policy_failed:
+        print(f"plan execute: blocked id={args.id} checks={','.join(policy_failed)}")
+        return 2
+
+    with storage.transaction():
+        storage.append_plan_state_event(
+            plan_id=args.id,
+            event_type="executed",
+            actor=actor,
+            plan_hash=stored_hash,
+            policy_checks={"passed": policy_passed, "failed": policy_failed},
+            metadata={"note": args.note or ""},
+        )
+    print(f"plan execute: id={args.id} executed_by={actor}")
+    return 0
+
+
 def _cmd_pipeline(args: argparse.Namespace) -> int:
     discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
@@ -315,6 +488,34 @@ def build_parser() -> argparse.ArgumentParser:
     plan_diff_parser = plan_subparsers.add_parser("diff", help="Show diff versus previous plan version")
     plan_diff_parser.add_argument("--id", type=int, required=True, help="Plan id")
     plan_diff_parser.set_defaults(handler=_cmd_plan_diff)
+
+    plan_approve_parser = plan_subparsers.add_parser("approve", help="Approve a proposed plan")
+    plan_approve_parser.add_argument("--id", type=int, required=True, help="Plan id")
+    plan_approve_parser.add_argument("--approver", default=None, help="Approver identity")
+    plan_approve_parser.add_argument("--reason", default=None, help="Approval rationale")
+    plan_approve_parser.add_argument(
+        "--approval-token",
+        default=None,
+        help="Optional signed approval token for non-interactive runs",
+    )
+    plan_approve_parser.set_defaults(handler=_cmd_plan_approve)
+
+    plan_reject_parser = plan_subparsers.add_parser("reject", help="Reject a proposed plan")
+    plan_reject_parser.add_argument("--id", type=int, required=True, help="Plan id")
+    plan_reject_parser.add_argument("--approver", default=None, help="Approver identity")
+    plan_reject_parser.add_argument("--reason", default=None, help="Rejection rationale")
+    plan_reject_parser.add_argument(
+        "--approval-token",
+        default=None,
+        help="Optional signed approval token for non-interactive runs",
+    )
+    plan_reject_parser.set_defaults(handler=_cmd_plan_reject)
+
+    plan_execute_parser = plan_subparsers.add_parser("execute", help="Mark an approved plan as executed")
+    plan_execute_parser.add_argument("--id", type=int, required=True, help="Plan id")
+    plan_execute_parser.add_argument("--executed-by", default=None, help="Execution operator identity")
+    plan_execute_parser.add_argument("--note", default=None, help="Execution note")
+    plan_execute_parser.set_defaults(handler=_cmd_plan_execute)
 
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"

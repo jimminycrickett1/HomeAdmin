@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -392,6 +393,25 @@ class Storage:
             raise RuntimeError("Failed to insert plan approval")
         return int(row["id"])
 
+    def insert_plan_state_event(self, payload: Mapping[str, object]) -> int:
+        """Insert an immutable plan state transition event and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO plan_state_events (
+              plan_id, event_type, actor, occurred_at, plan_hash,
+              policy_checks_json, approval_token_fingerprint, metadata_json
+            ) VALUES (
+              :plan_id, :event_type, :actor, :occurred_at, :plan_hash,
+              :policy_checks_json, :approval_token_fingerprint, :metadata_json
+            )
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert plan state event")
+        return int(row["id"])
+
     def latest_plan_version(self, plan_key: str) -> sqlite3.Row | None:
         """Fetch the latest plan row for a plan key."""
         return self.connection.execute(
@@ -428,6 +448,16 @@ class Storage:
             """,
             (plan_id,),
         ).fetchall()
+        state_events = self.connection.execute(
+            """
+            SELECT event_type, actor, occurred_at, plan_hash, policy_checks_json,
+                   approval_token_fingerprint, metadata_json
+            FROM plan_state_events
+            WHERE plan_id = ?
+            ORDER BY occurred_at ASC, id ASC
+            """,
+            (plan_id,),
+        ).fetchall()
 
         step_groups: dict[str, list[str]] = {
             "prerequisites": [],
@@ -440,6 +470,39 @@ class Storage:
             kind = str(step["step_kind"])
             if kind in step_groups:
                 step_groups[kind].append(str(step["content"]))
+        provenance: object = {}
+        for approval in approvals:
+            if str(approval["decision"]) != "generated":
+                continue
+            rationale_value = approval["rationale"]
+            if rationale_value is None:
+                continue
+            try:
+                metadata = json.loads(str(rationale_value))
+            except json.JSONDecodeError:
+                continue
+            provenance = metadata.get("provenance", {})
+            break
+
+        parsed_events: list[dict[str, object]] = []
+        for event in state_events:
+            policy_checks_value = event["policy_checks_json"]
+            metadata_value = event["metadata_json"]
+            parsed_events.append(
+                {
+                    "event_type": str(event["event_type"]),
+                    "actor": str(event["actor"]),
+                    "occurred_at": str(event["occurred_at"]),
+                    "plan_hash": str(event["plan_hash"]),
+                    "policy_checks": json.loads(str(policy_checks_value))
+                    if policy_checks_value is not None
+                    else {"passed": [], "failed": []},
+                    "approval_token_fingerprint": event["approval_token_fingerprint"],
+                    "metadata": json.loads(str(metadata_value))
+                    if metadata_value is not None
+                    else {},
+                }
+            )
 
         return {
             "id": int(row["id"]),
@@ -456,9 +519,81 @@ class Storage:
             "plan_hash": str(row["plan_hash"]),
             "generated_at": str(row["generated_at"]),
             "created_by": str(row["created_by"]),
+            "provenance": provenance,
             **step_groups,
             "approvals": [dict(item) for item in approvals],
+            "state_events": parsed_events,
+            "approval_state": self._derive_plan_state(parsed_events),
         }
+
+    def get_plan_state(self, plan_id: int) -> str | None:
+        """Return the latest state for a plan id."""
+        row = self.connection.execute(
+            """
+            SELECT event_type
+            FROM plan_state_events
+            WHERE plan_id = ?
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1
+            """,
+            (plan_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["event_type"])
+
+    def verify_plan_hash(self, plan_id: int, expected_plan_hash: str) -> bool:
+        """Verify a plan hash against the immutable persisted value."""
+        row = self.connection.execute(
+            "SELECT plan_hash FROM plans WHERE id = ?",
+            (plan_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return str(row["plan_hash"]) == expected_plan_hash
+
+    def append_plan_state_event(
+        self,
+        *,
+        plan_id: int,
+        event_type: str,
+        actor: str,
+        plan_hash: str,
+        policy_checks: Mapping[str, object] | None = None,
+        approval_token_fingerprint: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+        occurred_at: str | None = None,
+    ) -> int:
+        """Append validated plan state transition event."""
+        current = self.get_plan_state(plan_id)
+        if not self._is_valid_transition(current=current, new_state=event_type):
+            raise ValueError(f"invalid state transition: {current!r} -> {event_type!r}")
+        if not self.verify_plan_hash(plan_id, plan_hash):
+            raise ValueError("plan hash mismatch")
+
+        policy_payload = policy_checks or {"passed": [], "failed": []}
+        if occurred_at is None:
+            occurred_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return self.insert_plan_state_event(
+            {
+                "plan_id": plan_id,
+                "event_type": event_type,
+                "actor": actor,
+                "occurred_at": occurred_at,
+                "plan_hash": plan_hash,
+                "policy_checks_json": json.dumps(policy_payload, sort_keys=True),
+                "approval_token_fingerprint": approval_token_fingerprint,
+                "metadata_json": json.dumps(dict(metadata or {}), sort_keys=True),
+            }
+        )
+
+    def assert_plan_approved_for_execution(self, plan_id: int, plan_hash: str) -> None:
+        """Raise ValueError if plan is not approved and hash-verified."""
+        if not self.verify_plan_hash(plan_id, plan_hash):
+            raise ValueError("plan hash mismatch")
+        current = self.get_plan_state(plan_id)
+        if current != "approved":
+            raise ValueError(f"plan is not approved for execution; current_state={current}")
 
     def get_previous_plan(self, plan_id: int) -> dict[str, object] | None:
         """Fetch the previous version of the supplied plan id."""
@@ -539,5 +674,41 @@ class Storage:
                 "decided_at": generated_at,
             }
         )
+        self.append_plan_state_event(
+            plan_id=plan_id,
+            event_type="draft",
+            actor="system",
+            plan_hash=plan_hash,
+            policy_checks={"passed": ["plan_generated"], "failed": []},
+            metadata={"source": "plan-generate"},
+            occurred_at=generated_at,
+        )
+        self.append_plan_state_event(
+            plan_id=plan_id,
+            event_type="proposed",
+            actor="system",
+            plan_hash=plan_hash,
+            policy_checks={"passed": ["plan_generated"], "failed": []},
+            metadata={"source": "plan-generate"},
+            occurred_at=generated_at,
+        )
 
         return plan_id, next_version, True
+
+    @staticmethod
+    def _derive_plan_state(events: list[dict[str, object]]) -> str:
+        if not events:
+            return "unknown"
+        return str(events[-1]["event_type"])
+
+    @staticmethod
+    def _is_valid_transition(*, current: str | None, new_state: str) -> bool:
+        allowed: dict[str | None, set[str]] = {
+            None: {"draft"},
+            "draft": {"proposed"},
+            "proposed": {"approved", "rejected"},
+            "approved": {"executed", "rejected"},
+            "rejected": {"proposed"},
+            "executed": set(),
+        }
+        return new_state in allowed.get(current, set())

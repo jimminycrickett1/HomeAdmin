@@ -98,3 +98,56 @@ def test_plan_versions_are_immutable_and_incremented(tmp_path) -> None:
             pass
         else:
             raise AssertionError("Expected immutable plan update to fail")
+
+
+def test_plan_state_transitions_require_hash_match(tmp_path) -> None:
+    storage = Storage(tmp_path / "state.db")
+    storage.initialize()
+    compiled = compile_plans(_recommendations_payload())
+    plan = compiled["plans"][0]
+    plan_hash = plan_content_hash(plan)
+
+    with storage.transaction():
+        plan_id, _, _ = storage.persist_compiled_plan(
+            plan,
+            source_run_id=int(compiled["source_run_id"]),
+            generated_at=str(compiled["generated_at"]),
+            plan_hash=plan_hash,
+            created_by="test",
+        )
+
+    assert storage.get_plan_state(plan_id) == "proposed"
+
+    with storage.transaction():
+        storage.append_plan_state_event(
+            plan_id=plan_id,
+            event_type="approved",
+            actor="owner",
+            plan_hash=plan_hash,
+            policy_checks={"passed": ["plan_hash_verified"], "failed": []},
+        )
+    assert storage.get_plan_state(plan_id) == "approved"
+
+    with storage.transaction():
+        try:
+            storage.append_plan_state_event(
+                plan_id=plan_id,
+                event_type="executed",
+                actor="owner",
+                plan_hash="deadbeef",
+                policy_checks={"passed": [], "failed": ["plan_hash_mismatch"]},
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Expected plan hash mismatch to block execution state append")
+
+    with storage.transaction():
+        storage.append_plan_state_event(
+            plan_id=plan_id,
+            event_type="executed",
+            actor="owner",
+            plan_hash=plan_hash,
+            policy_checks={"passed": ["approved_state_verified", "plan_hash_verified"], "failed": []},
+        )
+    assert storage.get_plan_state(plan_id) == "executed"
