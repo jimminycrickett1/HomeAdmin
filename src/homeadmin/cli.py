@@ -12,6 +12,7 @@ from homeadmin.config import load_config, validate_discovery_scope
 from homeadmin.discovery import run_discovery
 from homeadmin.drift import calculate_drift, drift_to_dict
 from homeadmin.logging import configure_logging
+from homeadmin.plans import build_plan_diff, compile_plans, plan_content_hash
 from homeadmin.reconcile import load_discovery_assets, reconcile_assets
 from homeadmin.reporting import generate_recommendations, write_recommendation_reports, write_reports
 from homeadmin.storage.db import Storage
@@ -145,6 +146,96 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
     print(f"recommend: json={artifacts.json_path} markdown={artifacts.markdown_path}")
     return 0
 
+def _recommendation_payload_from_args(*, args: argparse.Namespace, db_path: Path) -> dict[str, object]:
+    if getattr(args, "recommendations_json", None) is not None:
+        return json.loads(args.recommendations_json.read_text(encoding="utf-8"))
+
+    storage = Storage(db_path)
+    storage.initialize()
+    drift_payload = drift_to_dict(calculate_drift(storage))
+    return generate_recommendations(drift_payload)
+
+
+def _cmd_plan_generate(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+
+    recommendations = _recommendation_payload_from_args(args=args, db_path=db_path)
+    compiled = compile_plans(recommendations)
+
+    storage = Storage(db_path)
+    storage.initialize()
+
+    created: list[tuple[int, int]] = []
+    reused: list[tuple[int, int]] = []
+    with storage.transaction():
+        for plan in compiled.get("plans", []):
+            if not isinstance(plan, dict):
+                continue
+            digest = plan_content_hash(plan)
+            plan_id, version, created_new = storage.persist_compiled_plan(
+                plan,
+                source_run_id=int(compiled.get("source_run_id", 0) or 0),
+                generated_at=str(compiled.get("generated_at")),
+                plan_hash=digest,
+                created_by="cli:plan-generate",
+            )
+            if created_new:
+                created.append((plan_id, version))
+            else:
+                reused.append((plan_id, version))
+
+    print(
+        "plan generate: "
+        f"created={len(created)} reused={len(reused)} total={compiled.get('plan_count', 0)}"
+    )
+    if created:
+        print("plan generate created ids: " + ", ".join(f"{pid}@v{ver}" for pid, ver in created))
+    if reused:
+        print("plan generate reused ids: " + ", ".join(f"{pid}@v{ver}" for pid, ver in reused))
+    return 0
+
+
+def _cmd_plan_show(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+    plan = storage.get_plan(args.id)
+    if plan is None:
+        print(f"plan show: not found id={args.id}")
+        return 2
+
+    print(json.dumps(plan, indent=2, sort_keys=True))
+    return 0
+
+
+def _cmd_plan_diff(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+
+    storage = Storage(db_path)
+    storage.initialize()
+    current = storage.get_plan(args.id)
+    if current is None:
+        print(f"plan diff: not found id={args.id}")
+        return 2
+
+    previous = storage.get_previous_plan(args.id)
+    diff_payload = {
+        "plan_id": args.id,
+        "current_version": current.get("version"),
+        "previous_version": previous.get("version") if previous else None,
+        "diff": build_plan_diff(current, previous),
+    }
+    print(json.dumps(diff_payload, indent=2, sort_keys=True))
+    return 0
+
+
 def _cmd_pipeline(args: argparse.Namespace) -> int:
     discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
@@ -204,6 +295,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional path to an existing drift_report.json payload to consume",
     )
     recommend_parser.set_defaults(handler=_cmd_recommend)
+
+    plan_parser = subparsers.add_parser("plan", help="Plan management")
+    plan_subparsers = plan_parser.add_subparsers(dest="plan_command", required=True)
+
+    plan_generate_parser = plan_subparsers.add_parser("generate", help="Compile and persist change plans")
+    plan_generate_parser.add_argument(
+        "--recommendations-json",
+        type=Path,
+        default=None,
+        help="Optional path to an existing recommendations_report.json payload to consume",
+    )
+    plan_generate_parser.set_defaults(handler=_cmd_plan_generate)
+
+    plan_show_parser = plan_subparsers.add_parser("show", help="Show plan details by id")
+    plan_show_parser.add_argument("--id", type=int, required=True, help="Plan id")
+    plan_show_parser.set_defaults(handler=_cmd_plan_show)
+
+    plan_diff_parser = plan_subparsers.add_parser("diff", help="Show diff versus previous plan version")
+    plan_diff_parser.add_argument("--id", type=int, required=True, help="Plan id")
+    plan_diff_parser.set_defaults(handler=_cmd_plan_diff)
 
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -340,3 +341,203 @@ class Storage:
         if row is None:
             raise RuntimeError("Failed to upsert identity evidence")
         return int(row["id"])
+
+
+    def insert_plan(self, payload: Mapping[str, object]) -> int:
+        """Insert a new immutable plan version and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO plans (
+              plan_key, version, parent_plan_id, title, recommendation_rule_id,
+              asset_uid, priority, source_run_id, blast_radius_estimate,
+              required_privilege_level, plan_hash, generated_at, created_by
+            ) VALUES (
+              :plan_key, :version, :parent_plan_id, :title, :recommendation_rule_id,
+              :asset_uid, :priority, :source_run_id, :blast_radius_estimate,
+              :required_privilege_level, :plan_hash, :generated_at, :created_by
+            )
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert plan")
+        return int(row["id"])
+
+    def insert_plan_step(self, payload: Mapping[str, object]) -> int:
+        """Insert an immutable plan step and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO plan_steps (plan_id, step_order, step_kind, content)
+            VALUES (:plan_id, :step_order, :step_kind, :content)
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert plan step")
+        return int(row["id"])
+
+    def insert_plan_approval(self, payload: Mapping[str, object]) -> int:
+        """Insert an immutable plan approval and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO plan_approvals (plan_id, approver, decision, rationale, decided_at)
+            VALUES (:plan_id, :approver, :decision, :rationale, :decided_at)
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert plan approval")
+        return int(row["id"])
+
+    def latest_plan_version(self, plan_key: str) -> sqlite3.Row | None:
+        """Fetch the latest plan row for a plan key."""
+        return self.connection.execute(
+            """
+            SELECT * FROM plans
+            WHERE plan_key = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (plan_key,),
+        ).fetchone()
+
+    def get_plan(self, plan_id: int) -> dict[str, object] | None:
+        """Fetch a plan with structured steps and approvals."""
+        row = self.connection.execute("SELECT * FROM plans WHERE id = ?", (plan_id,)).fetchone()
+        if row is None:
+            return None
+
+        steps = self.connection.execute(
+            """
+            SELECT step_kind, step_order, content
+            FROM plan_steps
+            WHERE plan_id = ?
+            ORDER BY step_kind, step_order
+            """,
+            (plan_id,),
+        ).fetchall()
+        approvals = self.connection.execute(
+            """
+            SELECT approver, decision, rationale, decided_at
+            FROM plan_approvals
+            WHERE plan_id = ?
+            ORDER BY decided_at ASC, id ASC
+            """,
+            (plan_id,),
+        ).fetchall()
+
+        step_groups: dict[str, list[str]] = {
+            "prerequisites": [],
+            "ordered_steps": [],
+            "expected_outcomes": [],
+            "rollback_steps": [],
+            "verification_checks": [],
+        }
+        for step in steps:
+            kind = str(step["step_kind"])
+            if kind in step_groups:
+                step_groups[kind].append(str(step["content"]))
+
+        return {
+            "id": int(row["id"]),
+            "plan_key": str(row["plan_key"]),
+            "version": int(row["version"]),
+            "parent_plan_id": row["parent_plan_id"],
+            "title": str(row["title"]),
+            "recommendation_rule_id": str(row["recommendation_rule_id"]),
+            "asset_uid": str(row["asset_uid"]),
+            "priority": str(row["priority"]),
+            "source_run_id": int(row["source_run_id"]),
+            "blast_radius_estimate": str(row["blast_radius_estimate"]),
+            "required_privilege_level": str(row["required_privilege_level"]),
+            "plan_hash": str(row["plan_hash"]),
+            "generated_at": str(row["generated_at"]),
+            "created_by": str(row["created_by"]),
+            **step_groups,
+            "approvals": [dict(item) for item in approvals],
+        }
+
+    def get_previous_plan(self, plan_id: int) -> dict[str, object] | None:
+        """Fetch the previous version of the supplied plan id."""
+        row = self.connection.execute(
+            "SELECT parent_plan_id FROM plans WHERE id = ?",
+            (plan_id,),
+        ).fetchone()
+        if row is None or row["parent_plan_id"] is None:
+            return None
+        return self.get_plan(int(row["parent_plan_id"]))
+
+    def persist_compiled_plan(
+        self,
+        plan: Mapping[str, object],
+        *,
+        source_run_id: int,
+        generated_at: str,
+        plan_hash: str,
+        created_by: str,
+    ) -> tuple[int, int, bool]:
+        """Persist one plan with immutable versioning; returns (id, version, created_new)."""
+        plan_key = str(plan["plan_key"])
+        latest = self.latest_plan_version(plan_key)
+        if latest is not None and str(latest["plan_hash"]) == plan_hash:
+            return int(latest["id"]), int(latest["version"]), False
+
+        next_version = 1
+        parent_plan_id = None
+        if latest is not None:
+            next_version = int(latest["version"]) + 1
+            parent_plan_id = int(latest["id"])
+
+        plan_id = self.insert_plan(
+            {
+                "plan_key": plan_key,
+                "version": next_version,
+                "parent_plan_id": parent_plan_id,
+                "title": str(plan["title"]),
+                "recommendation_rule_id": str(plan["recommendation_rule_id"]),
+                "asset_uid": str(plan["asset_uid"]),
+                "priority": str(plan["priority"]),
+                "source_run_id": source_run_id,
+                "blast_radius_estimate": str(plan["blast_radius_estimate"]),
+                "required_privilege_level": str(plan["required_privilege_level"]),
+                "plan_hash": plan_hash,
+                "generated_at": generated_at,
+                "created_by": created_by,
+            }
+        )
+
+        for step_kind in (
+            "prerequisites",
+            "ordered_steps",
+            "expected_outcomes",
+            "rollback_steps",
+            "verification_checks",
+        ):
+            values = plan.get(step_kind, [])
+            if not isinstance(values, list):
+                continue
+            for index, content in enumerate(values, start=1):
+                self.insert_plan_step(
+                    {
+                        "plan_id": plan_id,
+                        "step_order": index,
+                        "step_kind": step_kind,
+                        "content": str(content),
+                    }
+                )
+
+        metadata = {"provenance": plan.get("provenance")}
+        self.insert_plan_approval(
+            {
+                "plan_id": plan_id,
+                "approver": "system",
+                "decision": "generated",
+                "rationale": json.dumps(metadata, sort_keys=True),
+                "decided_at": generated_at,
+            }
+        )
+
+        return plan_id, next_version, True

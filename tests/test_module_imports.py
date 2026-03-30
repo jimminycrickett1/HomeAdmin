@@ -15,6 +15,8 @@ def test_critical_modules_import_cleanly() -> None:
         "homeadmin.drift",
         "homeadmin.drift.classifier",
         "homeadmin.drift.workflow",
+        "homeadmin.plans",
+        "homeadmin.plans.workflow",
     ):
         module = importlib.import_module(module_name)
         assert module is not None

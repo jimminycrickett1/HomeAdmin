@@ -74,4 +74,6 @@ homeadmin report
 Notes:
 - `discover` now runs configured collectors (`arp-scan`, `nmap`) and writes `.homeadmin/discovery/latest.json` from normalized observations.
 - `reconcile`, `baseline create`, `drift`, and `report` persist/read from `.homeadmin/homeadmin.db` and `.homeadmin/reports`.
+- `plan generate` compiles recommendations into immutable, versioned execution plans (`plans`, `plan_steps`, `plan_approvals`).
+- `plan show --id <id>` prints a persisted plan, and `plan diff --id <id>` compares it to the prior version.
 - You can override the runtime directory with `--state-dir` for deterministic test runs.
