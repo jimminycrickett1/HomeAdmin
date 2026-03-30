@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_network
 import json
 import os
@@ -20,6 +20,11 @@ class AppConfig:
     nmap_interface: str | None
     arp_scan_max_seconds: int
     nmap_max_rate: int
+    execute_allowed_action_types: tuple[str, ...] = field(default_factory=tuple)
+    execute_allowed_target_scopes: tuple[str, ...] = field(default_factory=tuple)
+    execute_maintenance_windows: tuple[str, ...] = ("*",)
+    execute_max_concurrent_changes: int = 1
+    execute_apply_enabled: bool = False
 
 
 def _load_optional_file_config() -> dict[str, Any]:
@@ -48,6 +53,13 @@ def _positive_int(value: Any, *, default: int, label: str) -> int:
     if parsed <= 0:
         raise ValueError(f"{label} must be a positive integer")
     return parsed
+
+
+def _bool(value: Any, *, default: bool) -> bool:
+    if value in (None, ""):
+        return default
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def load_config() -> AppConfig:
@@ -79,6 +91,33 @@ def load_config() -> AppConfig:
             os.environ.get("HOMEADMIN_NMAP_MAX_RATE") or file_config.get("nmap_max_rate"),
             default=100,
             label="nmap_max_rate",
+        ),
+        execute_allowed_action_types=_list_str(
+            os.environ.get("HOMEADMIN_EXECUTE_ALLOWED_ACTION_TYPES", "").split(",")
+            if os.environ.get("HOMEADMIN_EXECUTE_ALLOWED_ACTION_TYPES", "").strip()
+            else file_config.get("execute_allowed_action_types")
+        ),
+        execute_allowed_target_scopes=_list_str(
+            os.environ.get("HOMEADMIN_EXECUTE_ALLOWED_TARGET_SCOPES", "").split(",")
+            if os.environ.get("HOMEADMIN_EXECUTE_ALLOWED_TARGET_SCOPES", "").strip()
+            else file_config.get("execute_allowed_target_scopes")
+        ),
+        execute_maintenance_windows=_list_str(
+            os.environ.get("HOMEADMIN_EXECUTE_MAINTENANCE_WINDOWS", "").split(",")
+            if os.environ.get("HOMEADMIN_EXECUTE_MAINTENANCE_WINDOWS", "").strip()
+            else file_config.get("execute_maintenance_windows") or ["*"]
+        ),
+        execute_max_concurrent_changes=_positive_int(
+            os.environ.get("HOMEADMIN_EXECUTE_MAX_CONCURRENT_CHANGES")
+            or file_config.get("execute_max_concurrent_changes"),
+            default=1,
+            label="execute_max_concurrent_changes",
+        ),
+        execute_apply_enabled=_bool(
+            os.environ.get("HOMEADMIN_EXECUTE_APPLY_ENABLED")
+            if os.environ.get("HOMEADMIN_EXECUTE_APPLY_ENABLED") is not None
+            else file_config.get("execute_apply_enabled"),
+            default=False,
         ),
     )
 

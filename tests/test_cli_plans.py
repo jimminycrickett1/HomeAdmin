@@ -9,6 +9,7 @@ import hmac
 import json
 
 from homeadmin import cli
+from homeadmin.plans import plan_content_hash
 from homeadmin.storage import Storage
 
 
@@ -44,6 +45,9 @@ def test_cli_plan_parser_commands_exist() -> None:
 
     assert args.command == "plan"
     assert args.id == 7
+    execute_args = parser.parse_args(["execute", "--plan-id", "7", "--dry-run"])
+    assert execute_args.command == "execute"
+    assert execute_args.plan_id == 7
 
 
 def test_plan_execution_requires_approval(monkeypatch, tmp_path) -> None:
@@ -132,4 +136,70 @@ def test_plan_approve_with_signed_token(monkeypatch, tmp_path) -> None:
             approval_token=token,
         )
     )
+    assert status == 0
+
+
+def test_cli_execute_command_dry_run(monkeypatch, tmp_path) -> None:
+    storage = Storage(tmp_path / "homeadmin.db")
+    storage.initialize()
+    plan = {
+        "plan_key": "exec:asset-1",
+        "title": "Execute noop",
+        "recommendation_rule_id": "rule",
+        "asset_uid": "asset-1",
+        "priority": "low",
+        "prerequisites": [],
+        "ordered_steps": [],
+        "expected_outcomes": [],
+        "rollback_steps": [],
+        "verification_checks": [],
+        "blast_radius_estimate": "single-asset",
+        "required_privilege_level": "operator",
+        "provenance": {
+            "execution": {
+                "steps": [
+                    {
+                        "id": "noop",
+                        "action_type": "noop",
+                        "target_scope": "asset:asset-1",
+                        "command": "echo",
+                        "args": ["ok"],
+                    }
+                ]
+            }
+        },
+    }
+    digest = plan_content_hash(plan)
+    with storage.transaction():
+        plan_id, _, _ = storage.persist_compiled_plan(
+            plan,
+            source_run_id=0,
+            generated_at="2026-03-30T00:00:00+00:00",
+            plan_hash=digest,
+            created_by="test",
+        )
+        storage.append_plan_state_event(
+            plan_id=plan_id,
+            event_type="approved",
+            actor="owner",
+            plan_hash=digest,
+            policy_checks={"passed": ["ok"], "failed": []},
+            metadata={},
+        )
+
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "state_dir": tmp_path,
+            "execute_allowed_action_types": ("noop",),
+            "execute_allowed_target_scopes": ("asset:asset-1",),
+            "execute_maintenance_windows": ("*",),
+            "execute_max_concurrent_changes": 1,
+            "execute_apply_enabled": False,
+        },
+    )()
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+
+    status = cli._cmd_execute(argparse.Namespace(state_dir=tmp_path, plan_id=plan_id, dry_run=True, apply=False))
     assert status == 0

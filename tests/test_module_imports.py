@@ -15,6 +15,8 @@ def test_critical_modules_import_cleanly() -> None:
         "homeadmin.drift",
         "homeadmin.drift.classifier",
         "homeadmin.drift.workflow",
+        "homeadmin.execute",
+        "homeadmin.execute.workflow",
         "homeadmin.plans",
         "homeadmin.plans.workflow",
     ):

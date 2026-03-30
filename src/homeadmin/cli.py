@@ -16,6 +16,7 @@ from homeadmin.baseline import create_baseline_snapshot
 from homeadmin.config import load_config, validate_discovery_scope
 from homeadmin.discovery import run_discovery
 from homeadmin.drift import calculate_drift, drift_to_dict
+from homeadmin.execute import execute_plan
 from homeadmin.logging import configure_logging
 from homeadmin.plans import build_plan_diff, compile_plans, plan_content_hash
 from homeadmin.reconcile import load_discovery_assets, reconcile_assets
@@ -409,6 +410,41 @@ def _cmd_plan_execute(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_execute(args: argparse.Namespace) -> int:
+    config = load_config()
+    state_dir = args.state_dir or config.state_dir
+    db_path, _, _ = _state_paths(state_dir)
+    storage = Storage(db_path)
+    storage.initialize()
+
+    actor = str(os.getenv("HOMEADMIN_OPERATOR", "")).strip() or "unknown"
+    result = execute_plan(
+        storage=storage,
+        config=config,
+        plan_id=args.plan_id,
+        dry_run=bool(args.dry_run),
+        actor=actor,
+    )
+    if result.status == "not_found":
+        print(f"execute: not found plan_id={args.plan_id}")
+        return 2
+    if result.status == "blocked":
+        print(
+            "execute: blocked "
+            f"plan_id={args.plan_id} checks={','.join(result.policy_failed)}"
+        )
+        return 2
+
+    mode = "dry-run" if result.dry_run else "apply"
+    reuse_flag = " reused=yes" if result.reused_existing else ""
+    print(
+        "execute: "
+        f"plan_id={args.plan_id} mode={mode} status={result.status} "
+        f"steps={result.step_count} run_id={result.execution_run_id}{reuse_flag}"
+    )
+    return 0 if result.status == "succeeded" else 2
+
+
 def _cmd_pipeline(args: argparse.Namespace) -> int:
     discover_args = argparse.Namespace(state_dir=args.state_dir)
     reconcile_args = argparse.Namespace(state_dir=args.state_dir, run_uuid=args.run_uuid)
@@ -516,6 +552,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan_execute_parser.add_argument("--executed-by", default=None, help="Execution operator identity")
     plan_execute_parser.add_argument("--note", default=None, help="Execution note")
     plan_execute_parser.set_defaults(handler=_cmd_plan_execute)
+
+    execute_parser = subparsers.add_parser("execute", help="Execute an approved plan with policy checks")
+    execute_parser.add_argument("--plan-id", type=int, required=True, help="Plan id")
+    mode_group = execute_parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--dry-run", action="store_true", help="Run without applying changes")
+    mode_group.add_argument("--apply", action="store_true", help="Apply changes (requires explicit policy enablement)")
+    execute_parser.set_defaults(handler=_cmd_execute)
 
     pipeline_parser = subparsers.add_parser(
         "pipeline", help="Run discover -> reconcile -> baseline create -> drift -> report"
