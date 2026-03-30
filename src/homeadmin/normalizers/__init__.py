@@ -29,10 +29,10 @@ def normalize_hostname(raw_hostname: str | None) -> str | None:
 def normalize_observation(observation: Mapping[str, object]) -> dict[str, object]:
     """Normalize a generic discovery observation payload."""
     normalized = dict(observation)
-    normalized["mac"] = normalize_mac(observation.get("mac") if "mac" in observation else None)
-    normalized["hostname"] = normalize_hostname(
-        observation.get("hostname") if "hostname" in observation else None
-    )
+    raw_mac = observation.get("mac")
+    normalized["mac"] = normalize_mac(raw_mac if isinstance(raw_mac, str) else None)
+    raw_hostname = observation.get("hostname")
+    normalized["hostname"] = normalize_hostname(raw_hostname if isinstance(raw_hostname, str) else None)
     if "ip" in observation:
         normalized["ip"] = str(observation["ip"]).strip()
     return normalized
