@@ -30,6 +30,22 @@ def _insert_run(storage: Storage, run_uuid: str) -> int:
     )
 
 
+def _insert_discovery_run(storage: Storage, run_uuid: str) -> int:
+    return storage.upsert_run(
+        {
+            "run_uuid": run_uuid,
+            "source_collector": "discover",
+            "started_at": _now_iso(),
+            "finished_at": _now_iso(),
+            "raw_artifact_path": None,
+            "raw_artifact_hash": None,
+            "confidence": 1.0,
+            "status": "completed",
+            "is_partial": 0,
+        }
+    )
+
+
 def _insert_snapshot(storage: Storage, run_id: int, asset_uid: str, payload: dict[str, object]) -> None:
     storage.upsert_observation(
         {
@@ -131,3 +147,43 @@ def test_drift_discrepancy_persistence_is_idempotent(tmp_path: Path) -> None:
         "SELECT COUNT(*) AS count FROM discrepancies WHERE discrepancy_type = 'source_contradiction'"
     ).fetchone()["count"]
     assert int(count) == 1
+
+
+def test_drift_ignores_discovery_runs_for_latest_and_reference(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "state.db")
+    storage.initialize()
+
+    reconcile_1 = _insert_run(storage, "reconcile-1")
+    _insert_snapshot(
+        storage,
+        reconcile_1,
+        "asset-a",
+        {"asset_uid": "asset-a", "ip_address": "192.168.1.10", "hostname": "a.local", "status": "active"},
+    )
+
+    _insert_discovery_run(storage, "discover-between")
+
+    reconcile_2 = _insert_run(storage, "reconcile-2")
+    _insert_snapshot(
+        storage,
+        reconcile_2,
+        "asset-a",
+        {"asset_uid": "asset-a", "ip_address": "192.168.1.10", "hostname": "a.local", "status": "active"},
+    )
+    _insert_snapshot(
+        storage,
+        reconcile_2,
+        "asset-b",
+        {"asset_uid": "asset-b", "ip_address": "192.168.1.11", "hostname": "b.local", "status": "active"},
+    )
+
+    _insert_discovery_run(storage, "discover-latest")
+
+    storage.connection.commit()
+    result = calculate_drift(storage)
+
+    assert result.latest_run_id == reconcile_2
+    assert result.reference_run_id == reconcile_1
+    assert {item["asset_uid"] for item in result.current} == {"asset-a"}
+    assert {item["asset_uid"] for item in result.new} == {"asset-b"}
+    assert result.missing == []
