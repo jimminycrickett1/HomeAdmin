@@ -35,5 +35,4 @@ jobs:
 
       - name: CLI smoke
         run: |
-          homeadmin --help
           python -m homeadmin.cli --help

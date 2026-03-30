@@ -66,7 +66,12 @@ def _find_source_contradictions(asset: dict[str, Any]) -> list[str]:
 def calculate_drift(storage: Storage) -> DriftResult:
     """Compare latest run to previous run, or baseline when previous run is unavailable."""
     latest_row = storage.connection.execute(
-        "SELECT id FROM runs ORDER BY id DESC LIMIT 1"
+        """
+        SELECT id FROM runs
+        WHERE source_collector = 'reconcile'
+        ORDER BY id DESC
+        LIMIT 1
+        """
     ).fetchone()
     if latest_row is None:
         raise RuntimeError("Cannot detect drift: no reconciled runs exist")
@@ -75,7 +80,12 @@ def calculate_drift(storage: Storage) -> DriftResult:
     latest = _load_run_snapshots(storage, latest_run_id)
 
     prev_row = storage.connection.execute(
-        "SELECT id FROM runs WHERE id < ? ORDER BY id DESC LIMIT 1",
+        """
+        SELECT id FROM runs
+        WHERE source_collector = 'reconcile' AND id < ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
         (latest_run_id,),
     ).fetchone()
 
