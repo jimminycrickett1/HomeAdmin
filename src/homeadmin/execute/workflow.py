@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from ipaddress import ip_network
+from ipaddress import IPv4Network, IPv6Network, ip_network
 import hashlib
 import json
 import subprocess
@@ -214,14 +214,23 @@ def _target_scope_allowed(target_scope: str, allowlisted: tuple[str, ...]) -> bo
             candidate = ip_network(item, strict=False)
         except ValueError:
             continue
-        if target_net.subnet_of(candidate):
-            return True
+        if isinstance(target_net, IPv4Network) and isinstance(candidate, IPv4Network):
+            if target_net.subnet_of(candidate):
+                return True
+            continue
+        if isinstance(target_net, IPv6Network) and isinstance(candidate, IPv6Network):
+            if target_net.subnet_of(candidate):
+                return True
     return False
 
 
 def _run_step(*, step: Mapping[str, object], dry_run: bool) -> dict[str, Any]:
     command = str(step.get("command", "")).strip()
-    args = [str(item) for item in step.get("args", [])] if isinstance(step.get("args"), list) else []
+    raw_args = step.get("args")
+    if isinstance(raw_args, list):
+        args = [str(item) for item in raw_args]
+    else:
+        args = []
     env_policy = {"mode": "inherit_none", "allowlisted_keys": []}
 
     if dry_run:
