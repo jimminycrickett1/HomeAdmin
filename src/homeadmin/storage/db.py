@@ -314,3 +314,29 @@ class Storage:
         if existing is None:
             raise RuntimeError("Failed to insert discrepancy")
         return int(existing["id"])
+
+    def upsert_identity_evidence(self, payload: Mapping[str, object]) -> int:
+        """Insert or update identity evidence by identity/run/evidence type."""
+        query = """
+            INSERT INTO identity_evidence (
+              identity_id, run_id, evidence_type, weight, contribution, score, detail,
+              provenance, source_collector, raw_artifact_path, raw_artifact_hash
+            ) VALUES (
+              :identity_id, :run_id, :evidence_type, :weight, :contribution, :score, :detail,
+              :provenance, :source_collector, :raw_artifact_path, :raw_artifact_hash
+            )
+            ON CONFLICT(identity_id, run_id, evidence_type) DO UPDATE SET
+              weight = excluded.weight,
+              contribution = excluded.contribution,
+              score = excluded.score,
+              detail = excluded.detail,
+              provenance = excluded.provenance,
+              source_collector = excluded.source_collector,
+              raw_artifact_path = excluded.raw_artifact_path,
+              raw_artifact_hash = excluded.raw_artifact_hash
+            RETURNING id
+        """
+        row = self.connection.execute(query, payload).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to upsert identity evidence")
+        return int(row["id"])
