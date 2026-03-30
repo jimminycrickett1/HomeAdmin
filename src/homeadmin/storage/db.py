@@ -605,6 +605,88 @@ class Storage:
             return None
         return self.get_plan(int(row["parent_plan_id"]))
 
+    def insert_execution_run(self, payload: Mapping[str, object]) -> int:
+        """Insert a plan execution run and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO execution_runs (
+              plan_id, plan_hash, dry_run, actor, status, policy_checks_json, started_at, finished_at
+            ) VALUES (
+              :plan_id, :plan_hash, :dry_run, :actor, :status, :policy_checks_json, :started_at, :finished_at
+            )
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert execution run")
+        return int(row["id"])
+
+    def update_execution_run_status(self, run_id: int, *, status: str, finished_at: str) -> None:
+        """Update mutable execution run status fields."""
+        self.connection.execute(
+            """
+            UPDATE execution_runs
+            SET status = ?, finished_at = ?
+            WHERE id = ?
+            """,
+            (status, finished_at, run_id),
+        )
+
+    def insert_execution_step_result(self, payload: Mapping[str, object]) -> int:
+        """Insert one immutable execution step result and return id."""
+        row = self.connection.execute(
+            """
+            INSERT INTO execution_step_results (
+              execution_run_id, step_order, step_id, action_type, target_scope, command,
+              args_json, environment_policy_json, stdout, stderr, exit_code, artifact_hash
+            ) VALUES (
+              :execution_run_id, :step_order, :step_id, :action_type, :target_scope, :command,
+              :args_json, :environment_policy_json, :stdout, :stderr, :exit_code, :artifact_hash
+            )
+            RETURNING id
+            """,
+            payload,
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to insert execution step result")
+        return int(row["id"])
+
+    def get_execution_run(self, *, plan_id: int, plan_hash: str, dry_run: bool) -> sqlite3.Row | None:
+        """Fetch one execution run by idempotency key."""
+        return self.connection.execute(
+            """
+            SELECT * FROM execution_runs
+            WHERE plan_id = ? AND plan_hash = ? AND dry_run = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (plan_id, plan_hash, 1 if dry_run else 0),
+        ).fetchone()
+
+    def count_execution_steps(self, execution_run_id: int) -> int:
+        """Count persisted execution steps for a run id."""
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM execution_step_results WHERE execution_run_id = ?",
+            (execution_run_id,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["count"])
+
+    def count_running_apply_executions(self) -> int:
+        """Return active non-dry-run executions currently marked running."""
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM execution_runs
+            WHERE dry_run = 0 AND status = 'running'
+            """
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["count"])
+
     def persist_compiled_plan(
         self,
         plan: Mapping[str, object],
