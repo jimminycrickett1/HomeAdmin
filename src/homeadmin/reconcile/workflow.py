@@ -37,6 +37,32 @@ def _normalize_mac(value: Any) -> str | None:
     return None
 
 
+def _unknown_fingerprint(asset: dict[str, Any]) -> str:
+    """Build a stable fingerprint for unknown backlog tracking."""
+    explicit = str(asset.get("asset_uid") or "").strip()
+    if explicit:
+        return f"asset:{explicit}"
+
+    mac = _normalize_mac(asset.get("mac_address") or asset.get("mac"))
+    if mac:
+        return f"mac:{mac}"
+
+    hostname = str(asset.get("hostname") or "").strip().lower()
+    if hostname:
+        return f"hostname:{hostname}"
+
+    ip_address = str(asset.get("ip_address") or asset.get("ip") or "").strip()
+    if ip_address:
+        return f"ip:{ip_address}"
+
+    source_observations = asset.get("source_observations")
+    if isinstance(source_observations, dict) and source_observations:
+        normalized = json.dumps(source_observations, sort_keys=True)
+        return f"observation:{sha256(normalized.encode('utf-8')).hexdigest()}"
+
+    return "unknown:unidentified"
+
+
 def _identity_from_asset(asset: dict[str, Any]) -> tuple[str, str, str]:
     source_observations = asset.get("source_observations")
     macs: set[str] = set()
@@ -130,6 +156,10 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
     for asset in assets:
         now = _now_iso()
         identity_uid, identity_type, identity_value = _identity_from_asset(asset)
+        inferred_status = str(asset.get("status", "active"))
+        if not asset.get("mac_address") and not asset.get("hostname"):
+            inferred_status = "unknown"
+
         asset_payload = {
             "asset_uid": asset["asset_uid"],
             "mac_address": asset.get("mac_address"),
@@ -141,7 +171,7 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
             "raw_artifact_path": None,
             "raw_artifact_hash": None,
             "confidence": float(asset.get("confidence", 1.0)),
-            "status": str(asset.get("status", "active")),
+            "status": inferred_status,
             "is_active": 1,
         }
         asset_id = storage.upsert_asset(asset_payload)
@@ -166,9 +196,10 @@ def reconcile_assets(storage: Storage, assets: list[dict[str, Any]], *, run_uuid
             "mac_address": asset.get("mac_address"),
             "ip_address": asset.get("ip_address"),
             "hostname": asset.get("hostname"),
-            "status": asset.get("status", "active"),
+            "status": inferred_status,
             "sources": asset.get("sources", []),
             "source_observations": asset.get("source_observations", {}),
+            "unknown_fingerprint": _unknown_fingerprint(asset),
         }
         snapshot_json = json.dumps(snapshot, sort_keys=True)
         observation_payload = {

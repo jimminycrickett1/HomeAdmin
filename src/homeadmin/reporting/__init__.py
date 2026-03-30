@@ -23,6 +23,9 @@ def write_reports(result: DriftResult, output_dir: Path) -> ReportArtifacts:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = drift_to_dict(result)
 
+    payload["unknown_count_by_age_bucket"] = _unknown_count_by_age_bucket(payload.get("unresolved_unknowns", []))
+    payload["top_unresolved_unknowns"] = _top_unresolved_unknowns(payload.get("unresolved_unknowns", []))
+
     json_path = output_dir / "drift_report.json"
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -52,6 +55,12 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         "## Unresolved Unknowns",
         _render_asset_list(payload.get("unresolved_unknowns", [])),
         "",
+        "## Unknown Count by Age Bucket",
+        _render_age_bucket_list(payload.get("unknown_count_by_age_bucket", {})),
+        "",
+        "## Top Unresolved Unknowns Requiring Operator Input",
+        _render_asset_list(payload.get("top_unresolved_unknowns", [])),
+        "",
         "## Source Contradictions",
         _render_asset_list(payload.get("source_contradictions", [])),
         "",
@@ -72,4 +81,50 @@ def _render_asset_list(items: list[dict[str, Any]]) -> str:
         contradictions = item.get("contradictions")
         if contradictions:
             rendered.append(f"  - contradictions: {', '.join(str(c) for c in contradictions)}")
+        if item.get("classification"):
+            rendered.append(
+                "  - unknown_backlog: "
+                f"classification={item.get('classification')} "
+                f"priority={item.get('priority', 'n/a')} "
+                f"age_days={item.get('age_days', 'n/a')} "
+                f"recurrence_count={item.get('recurrence_count', 'n/a')}"
+            )
     return "\n".join(rendered)
+
+
+def _unknown_age_bucket(age_days: int) -> str:
+    if age_days <= 1:
+        return "0-1d"
+    if age_days <= 7:
+        return "2-7d"
+    if age_days <= 30:
+        return "8-30d"
+    return "31d+"
+
+
+def _unknown_count_by_age_bucket(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"0-1d": 0, "2-7d": 0, "8-30d": 0, "31d+": 0}
+    for item in items:
+        age_days = int(item.get("age_days", 0) or 0)
+        counts[_unknown_age_bucket(age_days)] += 1
+    return counts
+
+
+def _top_unresolved_unknowns(items: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]]:
+    ranked = sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("priority") == "high" else (1 if item.get("priority") == "medium" else 2),
+            -int(item.get("recurrence_count", 0) or 0),
+            -int(item.get("age_days", 0) or 0),
+            str(item.get("asset_uid", "")),
+        ),
+    )
+    return ranked[:limit]
+
+
+def _render_age_bucket_list(buckets: dict[str, int]) -> str:
+    if not buckets:
+        return "_None_"
+    ordered = ["0-1d", "2-7d", "8-30d", "31d+"]
+    return "\n".join(f"- `{bucket}`: `{int(buckets.get(bucket, 0))}`" for bucket in ordered)
