@@ -8,8 +8,6 @@ import shutil
 import subprocess
 import sys
 
-import pytest
-
 
 def test_cli_help_module_smoke() -> None:
     root = Path(__file__).resolve().parents[1]
@@ -62,7 +60,5 @@ def test_cli_help_console_script_smoke_when_installed() -> None:
         check=False,
     )
 
-    if completed.returncode != 0 and "pyenv:" in completed.stderr:
-        pytest.skip("homeadmin shim exists but no active pyenv installation provides it")
     assert completed.returncode == 0
     assert "usage:" in completed.stdout.lower()
