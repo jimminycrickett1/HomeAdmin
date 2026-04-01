@@ -21,6 +21,8 @@ class ReportArtifacts:
 
     json_path: Path
     markdown_path: Path
+    recommendations_json_path: Path
+    recommendations_markdown_path: Path
 
 
 def write_reports(result: DriftResult, output_dir: Path) -> ReportArtifacts:
@@ -37,7 +39,15 @@ def write_reports(result: DriftResult, output_dir: Path) -> ReportArtifacts:
     markdown_path = output_dir / "drift_report.md"
     markdown_path.write_text(_render_markdown(payload), encoding="utf-8")
 
-    return ReportArtifacts(json_path=json_path, markdown_path=markdown_path)
+    recommendations = generate_recommendations(payload)
+    recommendation_artifacts = write_recommendation_reports(recommendations, output_dir)
+
+    return ReportArtifacts(
+        json_path=json_path,
+        markdown_path=markdown_path,
+        recommendations_json_path=recommendation_artifacts.json_path,
+        recommendations_markdown_path=recommendation_artifacts.markdown_path,
+    )
 
 
 def _render_markdown(payload: dict[str, Any]) -> str:

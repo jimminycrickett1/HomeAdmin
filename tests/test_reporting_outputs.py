@@ -15,8 +15,26 @@ def test_write_reports_generates_expected_sections(tmp_path) -> None:
         latest_run_id=2,
         generated_at="2026-03-29T00:00:00+00:00",
         current=[{"asset_uid": "asset-a", "ip_address": "192.168.1.10", "hostname": "a.local", "status": "active"}],
-        new=[{"asset_uid": "asset-b", "ip_address": "192.168.1.11", "hostname": "b.local", "status": "active"}],
-        missing=[{"asset_uid": "asset-c", "ip_address": "192.168.1.12", "hostname": "c.local", "status": "missing"}],
+        new=[
+            {
+                "asset_uid": "asset-b",
+                "ip_address": "192.168.1.11",
+                "hostname": "b.local",
+                "status": "active",
+                "services": [{"service_name": "ssh", "port": 22, "protocol": "tcp"}],
+                "provenance": {"source_observation_keys": ["arp_scan"]},
+            }
+        ],
+        missing=[
+            {
+                "asset_uid": "asset-c",
+                "ip_address": "192.168.1.12",
+                "hostname": "c.local",
+                "status": "missing",
+                "services": [{"service_name": "http", "port": 80, "protocol": "tcp"}],
+                "discrepancy_id": 3101,
+            }
+        ],
         unresolved_unknowns=[
             {
                 "asset_uid": "asset-unknown-a",
@@ -37,9 +55,20 @@ def test_write_reports_generates_expected_sections(tmp_path) -> None:
                 "priority": "high",
                 "age_days": 10,
                 "recurrence_count": 5,
+                "discrepancy_id": 4101,
             },
         ],
-        source_contradictions=[{"asset_uid": "asset-d", "ip_address": "192.168.1.13", "hostname": "d.local", "status": "active", "contradictions": ["conflicting_ip_addresses"]}],
+        source_contradictions=[
+            {
+                "asset_uid": "asset-d",
+                "ip_address": "192.168.1.13",
+                "hostname": "d.local",
+                "status": "active",
+                "contradictions": ["conflicting_ip_addresses"],
+                "contradiction_recurrence_count": 2,
+                "discrepancy_ids": [2201, 2202],
+            }
+        ],
     )
 
     artifacts = write_reports(result, tmp_path)
@@ -58,3 +87,13 @@ def test_write_reports_generates_expected_sections(tmp_path) -> None:
     payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
     assert payload["unknown_count_by_age_bucket"] == {"0-1d": 0, "2-7d": 1, "8-30d": 1, "31d+": 0}
     assert payload["top_unresolved_unknowns"][0]["asset_uid"] == "asset-unknown-b"
+
+    recommendations_payload = json.loads(artifacts.recommendations_json_path.read_text(encoding="utf-8"))
+    assert recommendations_payload["recommendation_count"] >= 1
+
+    recommendations_md = artifacts.recommendations_markdown_path.read_text(encoding="utf-8")
+    assert "# HomeAdmin Recommendation Report" in recommendations_md
+    assert "priority=" in recommendations_md
+    assert "rationale:" in recommendations_md
+    assert "evidence_links:" in recommendations_md
+    assert "confidence:" in recommendations_md

@@ -38,10 +38,10 @@ def write_recommendation_reports(payload: Mapping[str, Any], output_dir: Path) -
     """Write recommendation reports as JSON and Markdown."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    json_path = output_dir / "recommendations_report.json"
+    json_path = output_dir / "recommendations.json"
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    markdown_path = output_dir / "recommendations_report.md"
+    markdown_path = output_dir / "recommendations.md"
     markdown_path.write_text(_render_recommendations_markdown(payload), encoding="utf-8")
 
     return RecommendationArtifacts(json_path=json_path, markdown_path=markdown_path)
@@ -62,6 +62,8 @@ def _recommend_exposed_services(drift_payload: Mapping[str, Any], run_id: int) -
                 "priority": "medium",
                 "asset_uid": str(asset.get("asset_uid", "unknown")),
                 "summary": "Asset exposes services without existing baseline expectations; confirm intended exposure before baselining.",
+                "rationale": "Newly observed exposed services can represent unreviewed attack surface and should be verified before baseline adoption.",
+                "confidence": 0.72,
                 "opportunity": {"services": services},
                 "provenance": _provenance(asset, run_id, default_discrepancy=f"new:{asset.get('asset_uid', 'unknown')}"),
             }
@@ -93,6 +95,8 @@ def _recommend_repeated_contradictions(drift_payload: Mapping[str, Any], run_id:
                 "priority": "high",
                 "asset_uid": asset_uid,
                 "summary": "Identity evidence contradictions repeated across observations; validate collector quality and identity resolution confidence.",
+                "rationale": "Recurring contradictory identifiers reduce trust in asset identity and can hide material drift.",
+                "confidence": 0.9,
                 "opportunity": {
                     "contradictions": contradictions,
                     "recurrence_count": observed_count,
@@ -118,6 +122,8 @@ def _recommend_missing_expected_services(drift_payload: Mapping[str, Any], run_i
                 "priority": "high",
                 "asset_uid": str(asset.get("asset_uid", "unknown")),
                 "summary": "Asset expected by reference is absent along with expected services; validate outage, retirement, or visibility gap.",
+                "rationale": "Missing expected assets/services can indicate outages, untracked decommissioning, or collector visibility regression.",
+                "confidence": 0.86,
                 "opportunity": {"expected_services": services},
                 "provenance": _provenance(asset, run_id, default_discrepancy=f"missing:{asset.get('asset_uid', 'unknown')}"),
             }
@@ -143,6 +149,8 @@ def _recommend_stale_unknown_assets(drift_payload: Mapping[str, Any], run_id: in
                 "priority": "high" if classification == "chronic_unknown" else "medium",
                 "asset_uid": str(asset.get("asset_uid", "unknown")),
                 "summary": "Unknown asset has persisted and requires operator triage for identification or suppression policy.",
+                "rationale": "Persistent unknown identities indicate unresolved inventory ambiguity that should be explicitly triaged.",
+                "confidence": 0.8 if classification == "chronic_unknown" else 0.68,
                 "opportunity": {
                     "classification": classification,
                     "age_days": age_days,
@@ -242,16 +250,17 @@ def _render_recommendations_markdown(payload: Mapping[str, Any]) -> str:
             f"- **{item.get('title', 'Recommendation')}** "
             f"(rule=`{item.get('rule_id', 'n/a')}`, priority=`{item.get('priority', 'n/a')}`, asset=`{item.get('asset_uid', 'unknown')}`)"
         )
-        lines.append(f"  - summary: {item.get('summary', '')}")
+        lines.append(f"  - rationale: {item.get('rationale') or item.get('summary', '')}")
+        lines.append(f"  - confidence: `{item.get('confidence', 'n/a')}`")
         provenance = item.get("provenance", {})
         lines.append(f"  - source_run_id: `{provenance.get('source_run_id', 'n/a')}`")
         lines.append(
             "  - discrepancy_ids: "
             + ", ".join(f"`{value}`" for value in provenance.get("discrepancy_ids", []))
         )
+        evidence_links = [f"[`{value}`](#{value})" for value in provenance.get("observation_references", [])]
         lines.append(
-            "  - observation_references: "
-            + ", ".join(f"`{value}`" for value in provenance.get("observation_references", []))
+            "  - evidence_links: " + (", ".join(evidence_links) if evidence_links else "_None_")
         )
 
     return "\n".join(lines)
