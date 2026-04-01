@@ -5,9 +5,11 @@ from homeadmin.recommend.models import (
     RecommendationEvidenceLink,
     RecommendationSourceReferences,
 )
+from homeadmin.recommend.engine import generate_ranked_recommendations
 
 __all__ = [
     "Recommendation",
     "RecommendationEvidenceLink",
     "RecommendationSourceReferences",
+    "generate_ranked_recommendations",
 ]

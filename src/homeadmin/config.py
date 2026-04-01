@@ -25,6 +25,10 @@ class AppConfig:
     execute_maintenance_windows: tuple[str, ...] = ("*",)
     execute_max_concurrent_changes: int = 1
     execute_apply_enabled: bool = False
+    recommend_impact_weight: float = 0.35
+    recommend_risk_weight: float = 0.35
+    recommend_effort_weight: float = 0.15
+    recommend_confidence_weight: float = 0.15
 
 
 def _load_optional_file_config() -> dict[str, Any]:
@@ -60,6 +64,15 @@ def _bool(value: Any, *, default: bool) -> bool:
         return default
     normalized = str(value).strip().lower()
     return normalized in {"1", "true", "yes", "on"}
+
+
+def _weight(value: Any, *, default: float, label: str) -> float:
+    if value in (None, ""):
+        return default
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError(f"{label} must be non-negative")
+    return parsed
 
 
 def load_config() -> AppConfig:
@@ -118,6 +131,27 @@ def load_config() -> AppConfig:
             if os.environ.get("HOMEADMIN_EXECUTE_APPLY_ENABLED") is not None
             else file_config.get("execute_apply_enabled"),
             default=False,
+        ),
+        recommend_impact_weight=_weight(
+            os.environ.get("HOMEADMIN_RECOMMEND_IMPACT_WEIGHT") or file_config.get("recommend_impact_weight"),
+            default=0.35,
+            label="recommend_impact_weight",
+        ),
+        recommend_risk_weight=_weight(
+            os.environ.get("HOMEADMIN_RECOMMEND_RISK_WEIGHT") or file_config.get("recommend_risk_weight"),
+            default=0.35,
+            label="recommend_risk_weight",
+        ),
+        recommend_effort_weight=_weight(
+            os.environ.get("HOMEADMIN_RECOMMEND_EFFORT_WEIGHT") or file_config.get("recommend_effort_weight"),
+            default=0.15,
+            label="recommend_effort_weight",
+        ),
+        recommend_confidence_weight=_weight(
+            os.environ.get("HOMEADMIN_RECOMMEND_CONFIDENCE_WEIGHT")
+            or file_config.get("recommend_confidence_weight"),
+            default=0.15,
+            label="recommend_confidence_weight",
         ),
     )
 
