@@ -47,6 +47,9 @@ def test_write_recommendation_reports_outputs_json_and_markdown(tmp_path: Path) 
 
     artifacts = write_recommendation_reports(recommendations, tmp_path)
 
+    assert artifacts.json_path.name == "recommendations.json"
+    assert artifacts.markdown_path.name == "recommendations.md"
+
     serialized = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
     assert serialized["recommendation_count"] == 4
 
@@ -55,6 +58,9 @@ def test_write_recommendation_reports_outputs_json_and_markdown(tmp_path: Path) 
     assert "## Actionable Opportunities" in markdown
     assert "`2201`" in markdown
     assert "source_observation:arp_scan" in markdown
+    assert "rationale:" in markdown
+    assert "confidence:" in markdown
+    assert "evidence_links:" in markdown
 
 
 def test_ranked_recommendations_emit_rule_packs_and_stable_order() -> None:

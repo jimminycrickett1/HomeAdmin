@@ -86,7 +86,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
     result = calculate_drift(storage)
     artifacts = write_reports(result, reports_dir)
-    print(f"report: json={artifacts.json_path} markdown={artifacts.markdown_path}")
+    print(
+        "report: "
+        f"json={artifacts.json_path} markdown={artifacts.markdown_path} "
+        f"recommendations_json={artifacts.recommendations_json_path} "
+        f"recommendations_markdown={artifacts.recommendations_markdown_path}"
+    )
     return 0
 
 
@@ -515,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--recommendations-json",
         type=Path,
         default=None,
-        help="Optional path to an existing recommendations_report.json payload to consume",
+        help="Optional path to an existing recommendations.json payload to consume",
     )
     plan_generate_parser.set_defaults(handler=_cmd_plan_generate)
 
