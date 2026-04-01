@@ -1,6 +1,10 @@
 from homeadmin.drift import calculate_drift, classify_drift
+from homeadmin.drift import DriftResult
+from homeadmin.config import AppConfig
+from homeadmin.recommend import generate_ranked_recommendations
 from homeadmin.reconcile.workflow import reconcile_assets
 from homeadmin.storage import Storage
+from pathlib import Path
 
 
 def test_drift_classification_includes_requested_blind_spots():
@@ -86,3 +90,30 @@ def test_unknowns_are_classified_as_new_then_chronic(tmp_path) -> None:
         """
     ).fetchone()["count"]
     assert int(escalated_count) >= 1
+
+
+def test_recommendation_tie_breaks_are_deterministic() -> None:
+    drift = DriftResult(
+        reference_type="previous_run",
+        reference_run_id=1,
+        latest_run_id=2,
+        generated_at="2026-04-01T00:00:00+00:00",
+        current=[],
+        new=[
+            {"asset_uid": "asset-b", "services": [{"service_name": "ssh", "port": 22, "protocol": "tcp"}]},
+            {"asset_uid": "asset-a", "services": [{"service_name": "ssh", "port": 22, "protocol": "tcp"}]},
+        ],
+        missing=[],
+        unresolved_unknowns=[],
+        source_contradictions=[],
+    )
+    config = AppConfig(
+        state_dir=Path(".homeadmin"),
+        allowed_cidrs=(),
+        arp_scan_interface=None,
+        nmap_interface=None,
+        arp_scan_max_seconds=120,
+        nmap_max_rate=100,
+    )
+    ranked = generate_ranked_recommendations(drift, [], config=config)
+    assert [item["asset_uid"] for item in ranked] == ["asset-a", "asset-b"]
