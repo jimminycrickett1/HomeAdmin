@@ -344,6 +344,89 @@ class Storage:
             raise RuntimeError("Failed to upsert identity evidence")
         return int(row["id"])
 
+    def upsert_recommendation(self, payload: Mapping[str, object]) -> int:
+        """Insert or update a recommendation by recommendation_uid."""
+        query = """
+            INSERT INTO recommendations (
+              recommendation_uid, category, title, rationale, impact_score, risk_score,
+              effort_score, confidence, priority_rank
+            ) VALUES (
+              :id, :category, :title, :rationale, :impact_score, :risk_score,
+              :effort_score, :confidence, :priority_rank
+            )
+            ON CONFLICT(recommendation_uid) DO UPDATE SET
+              category = excluded.category,
+              title = excluded.title,
+              rationale = excluded.rationale,
+              impact_score = excluded.impact_score,
+              risk_score = excluded.risk_score,
+              effort_score = excluded.effort_score,
+              confidence = excluded.confidence,
+              priority_rank = excluded.priority_rank
+            RETURNING id
+        """
+        row = self.connection.execute(query, payload).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to upsert recommendation")
+        return int(row["id"])
+
+    def upsert_recommendation_evidence_link(self, payload: Mapping[str, object]) -> int:
+        """Insert or update recommendation evidence link by natural key."""
+        query = """
+            INSERT INTO recommendation_evidence_links (
+              recommendation_id, run_id, discrepancy_id, asset_id
+            ) VALUES (
+              :recommendation_id, :run_id, :discrepancy_id, :asset_id
+            )
+            ON CONFLICT DO NOTHING
+            RETURNING id
+        """
+        row = self.connection.execute(query, payload).fetchone()
+        if row is not None:
+            return int(row["id"])
+
+        existing = self.connection.execute(
+            """
+            SELECT id
+            FROM recommendation_evidence_links
+            WHERE recommendation_id = :recommendation_id
+              AND run_id = :run_id
+              AND ifnull(discrepancy_id, -1) = ifnull(:discrepancy_id, -1)
+              AND ifnull(asset_id, -1) = ifnull(:asset_id, -1)
+            LIMIT 1
+            """,
+            payload,
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("Failed to upsert recommendation evidence link")
+        return int(existing["id"])
+
+    def get_recommendation(self, recommendation_uid: str) -> sqlite3.Row | None:
+        """Fetch one recommendation by recommendation_uid."""
+        row = self.connection.execute(
+            """
+            SELECT id, recommendation_uid, category, title, rationale, impact_score,
+                   risk_score, effort_score, confidence, priority_rank
+            FROM recommendations
+            WHERE recommendation_uid = ?
+            """,
+            (recommendation_uid,),
+        ).fetchone()
+        return cast(sqlite3.Row | None, row)
+
+    def list_recommendation_evidence_links(self, recommendation_id: int) -> list[sqlite3.Row]:
+        """Return evidence link rows for a recommendation ordered deterministically."""
+        rows = self.connection.execute(
+            """
+            SELECT id, recommendation_id, run_id, discrepancy_id, asset_id
+            FROM recommendation_evidence_links
+            WHERE recommendation_id = ?
+            ORDER BY run_id ASC, discrepancy_id ASC, asset_id ASC, id ASC
+            """,
+            (recommendation_id,),
+        ).fetchall()
+        return [cast(sqlite3.Row, row) for row in rows]
+
 
     def insert_plan(self, payload: Mapping[str, object]) -> int:
         """Insert a new immutable plan version and return id."""
